@@ -17,8 +17,8 @@ jobs:
         with:
           submodules: recursive
       - run: sudo apt-get update -q && sudo apt-get install -y -q libsdl2-dev
-      - name: unit tests (captest, rules, rosters)
-        run: make test
+      - name: build the game C and run the rules test (make test itself needs recorded captures, which are retail-derived)
+        run: make build/captest rulestest
   static:
     runs-on: ubuntu-latest
     steps:
