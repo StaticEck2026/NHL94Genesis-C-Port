@@ -29,7 +29,7 @@ byte_ops = {'btst', 'bset', 'bclr', 'bchg', 'sf', 'st', 'scc', 'scs', 'seq', 'sn
 addr_ops = {'lea', 'pea', 'jsr', 'jmp', 'movem'}
 
 widths = collections.defaultdict(collections.Counter)   # name -> Counter of 'b','w','l','?'
-for f in sorted((ref / 'src').glob('*.asm')):
+for f in sorted(f for f in (ref / 'src').glob('**/*.asm') if 'segacd' not in f.parts):
     for line in f.read_text(errors='replace').splitlines():
         if line.lstrip().startswith(';'):
             continue
