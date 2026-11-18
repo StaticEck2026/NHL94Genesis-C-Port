@@ -226,10 +226,11 @@ gen:
 	$(PY) tools/gen_tables.py $(ASMSRC)/engine/hockey94.asm "GetPeriodTime/.timetab:periodtimes" -o src/hockey_tables_gen.h
 	$(PY) tools/gen_tables.py $(ASMSRC)/engine/video94.asm "showzam/.ftab:zam_ftab" "checksso/.tab:sso_tab" -o src/display_tables_gen.h
 	$(PY) tools/gen_tables.py $(ASMSRC)/engine/setup94.asm "defaultsprites/.listsso:listsso" "defaultsprites/.listffo:listffo" "defaultsprites_0/.list:dslist" -o src/setup_tables_gen.h
-	$(PY) tools/gen_tables.py $(ASMSRC)/engine/penalty94.asm sctab "StartHL2/.postab:hl_postab" -o src/penalty_tables_gen.h
+	$(PY) tools/gen_tables.py $(ASMSRC)/engine/scoreboard94.asm sctab "StartHL2/.postab:hl_postab" -o src/scoreboard_tables_gen.h
 	$(PY) tools/gen_strings.py $(ASMSRC)/engine/logic94.asm -o src/checks_strings_gen.h
 	$(PY) tools/gen_strings.py $(ASMSRC)/engine/logic94.asm -o src/input_strings_gen.h
 	$(PY) tools/gen_strings.py $(ASMSRC)/engine/penalty94.asm -o src/penalty_strings_gen.h
+	$(PY) tools/gen_strings.py $(ASMSRC)/engine/scoreboard94.asm -o src/scoreboard_strings_gen.h
 	$(PY) tools/gen_strings.py $(ASMSRC)/engine/period94.asm -o src/period_strings_gen.h
 	$(PY) tools/gen_strings.py $(ASMSRC)/engine/hockey94.asm -o src/hockey_strings_gen.h
 	$(PY) tools/gen_strings.py $(ASMSRC)/engine/video94.asm -o src/display_strings_gen.h
