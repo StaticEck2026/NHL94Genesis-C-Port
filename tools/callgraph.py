@@ -14,7 +14,7 @@ INS = re.compile(r'^\s+[a-z]+(\.[bwls])?(\s|$)')
 
 def parse():
     routines = {}       # name -> dict(file, line, insns, calls:set)
-    for f in sorted(SRC.glob('*.asm')):
+    for f in sorted(f for f in SRC.glob('**/*.asm') if 'segacd' not in f.parts):
         cur = None
         for ln, line in enumerate(f.read_text(errors='replace').splitlines(), 1):
             if line.startswith(';') or not line.strip():

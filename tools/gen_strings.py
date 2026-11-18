@@ -52,8 +52,8 @@ def load_equates(paths):
                 eq[k] = v['addr']
     ram = None
     for p in paths:
-        cand = p.parent / 'ram94.asm'
-        if cand.exists():
+        cand = next((c for c in (p.parent / 'ram94.asm', p.parent.parent / 'ram94.asm') if c.exists()), None)
+        if cand:
             ram = cand
             break
     if ram:
