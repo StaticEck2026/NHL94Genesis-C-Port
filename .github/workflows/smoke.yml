@@ -17,8 +17,8 @@ jobs:
         with:
           submodules: recursive
       - run: sudo apt-get update -q && sudo apt-get install -y -q libsdl2-dev
-      - name: build the game C and run the rules test (make test itself needs recorded captures, which are retail-derived)
-        run: make build/captest rulestest
+      - name: build the game C and the rules test (make test itself needs recorded captures, which are retail-derived)
+        run: make build/captest build/rulestest
   static:
     runs-on: ubuntu-latest
     steps:
@@ -52,4 +52,4 @@ jobs:
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q libsdl2-dev
           cp vault/NHL94-Genesis/nhl94retail.bin ./nhl94retail.bin
-          make -j4 && make golden-check
+          make -j4 && make rulestest golden-check
