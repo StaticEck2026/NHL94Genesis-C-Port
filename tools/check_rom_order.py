@@ -44,9 +44,10 @@ def c_path(cdir, module):
 
 
 def asm_path(asm, module):
-    path = os.path.join(asm, 'src', module + '94.asm')
-    if os.path.isfile(path):
-        return path
+    for sub in ('', 'engine', 'front'):
+        path = os.path.join(asm, 'src', sub, module + '94.asm')
+        if os.path.isfile(path):
+            return path
     sys.exit('check_rom_order.py: no %s94.asm under %s/src' % (module, asm))
 
 

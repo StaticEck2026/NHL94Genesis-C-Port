@@ -220,31 +220,32 @@ ASMSRC  := $(NHL_ASM)/src
 gen:
 	@test -d "$(ASMSRC)" || { echo "make gen needs NHL94Genesis at \$$NHL_ASM or ../nhl94genesis"; exit 1; }
 	@mkdir -p out
-	$(PY) tools/gen_tables.py $(ASMSRC)/collide94.asm "checkpuckcoll/.cbg:cbg" "checkpuckcoll/.cbgsq:cbgsq" "puckgoalie/.list:savelist" "puckgoalie/.list2:saveodds" "puckgoalie/.list3:saveodds3" "Setplass/.alist:alist" "FallDown/.FallList:FallList" checkinglist -o src/collide_tables_gen.h
-	$(PY) tools/gen_tables.py $(ASMSRC)/logic94.asm "asswingo/.dedata:wingo_zones" "asscentero/.dedata:centero_zones" "asspuckc/.postab2:puckc_postab" "goaliesave/.saveanim:saveanim" "CompLine/.hl1:homelines" "CompLine/.al1:awaylines" "puckfaceoff2/.apl:fo_apl" "puckfaceoff2/.ptab:fo_ptab" "Endfaceoff/.ftab:fo_ftab" "doplayeracc/.ftab:turn_ftab" MaxSpeed dirtab -o src/checks_tables_gen.h
-	$(PY) tools/gen_tables.py $(ASMSRC)/logic94.asm "getlchoice/.tab:lchoice_tab" shotsets -o src/input_tables_gen.h
-	$(PY) tools/gen_tables.py $(ASMSRC)/hockey94.asm "GetPeriodTime/.timetab:periodtimes" -o src/hockey_tables_gen.h
-	$(PY) tools/gen_tables.py $(ASMSRC)/video94.asm "showzam/.ftab:zam_ftab" "checksso/.tab:sso_tab" -o src/display_tables_gen.h
-	$(PY) tools/gen_tables.py $(ASMSRC)/setup94.asm "defaultsprites/.listsso:listsso" "defaultsprites/.listffo:listffo" "defaultsprites_0/.list:dslist" -o src/setup_tables_gen.h
-	$(PY) tools/gen_tables.py $(ASMSRC)/penalty94.asm sctab "StartHL2/.postab:hl_postab" -o src/penalty_tables_gen.h
-	$(PY) tools/gen_strings.py $(ASMSRC)/logic94.asm -o src/checks_strings_gen.h
-	$(PY) tools/gen_strings.py $(ASMSRC)/logic94.asm -o src/input_strings_gen.h
-	$(PY) tools/gen_strings.py $(ASMSRC)/penalty94.asm -o src/penalty_strings_gen.h
-	$(PY) tools/gen_strings.py $(ASMSRC)/period94.asm -o src/period_strings_gen.h
-	$(PY) tools/gen_strings.py $(ASMSRC)/hockey94.asm -o src/hockey_strings_gen.h
-	$(PY) tools/gen_strings.py $(ASMSRC)/video94.asm -o src/display_strings_gen.h
-	$(PY) tools/gen_strings.py $(ASMSRC)/replay94.asm -o src/replay_strings_gen.h
-	$(PY) tools/gen_strings.py $(ASMSRC)/title94.asm $(ASMSRC)/ui94.asm -o src/title_strings_gen.h
-	$(PY) tools/gen_strings.py $(ASMSRC)/setup94.asm -o src/data_strings_gen.h
-	$(PY) tools/gen_strings.py $(ASMSRC)/shootout94.asm -o src/shootout_strings_gen.h
-	$(PY) tools/gen_strings.py $(ASMSRC)/menu94.asm -o src/menu_strings_gen.h
-	$(PY) tools/gen_strings.py $(ASMSRC)/stats94.asm -o src/stats_strings_gen.h
-	$(PY) tools/gen_strings.py $(ASMSRC)/setup94.asm -o src/attract_strings_gen.h
-	$(PY) tools/gen_strings.py $(ASMSRC)/cards94.asm -o src/cards_strings_gen.h
-	$(PY) tools/gen_strings.py $(ASMSRC)/optsetup94.asm -o src/optsetup_strings_gen.h
-	$(PY) tools/gen_strings.py $(ASMSRC)/records94.asm -o src/records_strings_gen.h
-	$(PY) tools/gen_strings.py $(ASMSRC)/setup94.asm -o src/setup_strings_gen.h
-	$(PY) tools/gen_strings.py $(ASMSRC)/scout94.asm -o src/scout_strings_gen.h
+	$(PY) tools/gen_tables.py $(ASMSRC)/engine/collide94.asm "checkpuckcoll/.cbg:cbg" "checkpuckcoll/.cbgsq:cbgsq" "puckgoalie/.list:savelist" "puckgoalie/.list2:saveodds" "puckgoalie/.list3:saveodds3" "Setplass/.alist:alist" "FallDown/.FallList:FallList" checkinglist -o src/collide_tables_gen.h
+	$(PY) tools/gen_tables.py $(ASMSRC)/engine/logic94.asm "asswingo/.dedata:wingo_zones" "asscentero/.dedata:centero_zones" "asspuckc/.postab2:puckc_postab" "goaliesave/.saveanim:saveanim" "CompLine/.hl1:homelines" "CompLine/.al1:awaylines" "puckfaceoff2/.apl:fo_apl" "puckfaceoff2/.ptab:fo_ptab" "Endfaceoff/.ftab:fo_ftab" "doplayeracc/.ftab:turn_ftab" MaxSpeed dirtab -o src/checks_tables_gen.h
+	$(PY) tools/gen_tables.py $(ASMSRC)/engine/logic94.asm "getlchoice/.tab:lchoice_tab" shotsets -o src/input_tables_gen.h
+	$(PY) tools/gen_tables.py $(ASMSRC)/engine/hockey94.asm "GetPeriodTime/.timetab:periodtimes" -o src/hockey_tables_gen.h
+	$(PY) tools/gen_tables.py $(ASMSRC)/engine/video94.asm "showzam/.ftab:zam_ftab" "checksso/.tab:sso_tab" -o src/display_tables_gen.h
+	$(PY) tools/gen_tables.py $(ASMSRC)/engine/setup94.asm "defaultsprites/.listsso:listsso" "defaultsprites/.listffo:listffo" "defaultsprites_0/.list:dslist" -o src/setup_tables_gen.h
+	$(PY) tools/gen_tables.py $(ASMSRC)/engine/scoreboard94.asm sctab "StartHL2/.postab:hl_postab" -o src/scoreboard_tables_gen.h
+	$(PY) tools/gen_strings.py $(ASMSRC)/engine/logic94.asm -o src/checks_strings_gen.h
+	$(PY) tools/gen_strings.py $(ASMSRC)/engine/logic94.asm -o src/input_strings_gen.h
+	$(PY) tools/gen_strings.py $(ASMSRC)/engine/penalty94.asm -o src/penalty_strings_gen.h
+	$(PY) tools/gen_strings.py $(ASMSRC)/engine/scoreboard94.asm -o src/scoreboard_strings_gen.h
+	$(PY) tools/gen_strings.py $(ASMSRC)/engine/period94.asm -o src/period_strings_gen.h
+	$(PY) tools/gen_strings.py $(ASMSRC)/engine/hockey94.asm -o src/hockey_strings_gen.h
+	$(PY) tools/gen_strings.py $(ASMSRC)/engine/video94.asm -o src/display_strings_gen.h
+	$(PY) tools/gen_strings.py $(ASMSRC)/engine/replay94.asm -o src/replay_strings_gen.h
+	$(PY) tools/gen_strings.py $(ASMSRC)/front/title94.asm $(ASMSRC)/ui94.asm -o src/title_strings_gen.h
+	$(PY) tools/gen_strings.py $(ASMSRC)/engine/setup94.asm -o src/data_strings_gen.h
+	$(PY) tools/gen_strings.py $(ASMSRC)/front/shootout94.asm -o src/shootout_strings_gen.h
+	$(PY) tools/gen_strings.py $(ASMSRC)/front/menu94.asm -o src/menu_strings_gen.h
+	$(PY) tools/gen_strings.py $(ASMSRC)/front/stats94.asm -o src/stats_strings_gen.h
+	$(PY) tools/gen_strings.py $(ASMSRC)/engine/setup94.asm -o src/attract_strings_gen.h
+	$(PY) tools/gen_strings.py $(ASMSRC)/front/cards94.asm -o src/cards_strings_gen.h
+	$(PY) tools/gen_strings.py $(ASMSRC)/front/optsetup94.asm -o src/optsetup_strings_gen.h
+	$(PY) tools/gen_strings.py $(ASMSRC)/front/records94.asm -o src/records_strings_gen.h
+	$(PY) tools/gen_strings.py $(ASMSRC)/engine/setup94.asm -o src/setup_strings_gen.h
+	$(PY) tools/gen_strings.py $(ASMSRC)/front/scout94.asm -o src/scout_strings_gen.h
 	@if [ -d ref/NHL94Genesis ] && [ -f build/asm/symbols.json ]; then $(MAKE) gen-pin; else echo "skip gen-pin (no ref/NHL94Genesis or build/asm/symbols.json)"; fi
 	@git status --short -- src/ram.h 'src/*_gen.h' native/routines_gen.h
 gen-pin:
