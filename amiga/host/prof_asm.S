@@ -61,6 +61,15 @@ show_handler:
 	move.w	#0x0010,0x9c(%a0)
 	move.w	#0x0010,0x9c(%a0)
 .Lsnocop:
+	btst	#6,%d0				/* BLIT: the next queued blit (blit.c) */
+	beq.s	.Lsnoblit
+	move.w	#0x0040,0x9c(%a0)
+	move.w	#0x0040,0x9c(%a0)
+	movem.l	%d0/%a0-%a1,-(%sp)
+	jsr	blit_irq
+	movem.l	(%sp)+,%d0/%a0-%a1
+	lea	0xdff000,%a0
+.Lsnoblit:
 	btst	#5,%d0				/* VERTB */
 	beq.s	.Lsdone
 	addq.l	#1,vb_count

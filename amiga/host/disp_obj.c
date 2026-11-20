@@ -307,25 +307,29 @@ static void sprite_list(void)
     }
 }
 
-/* a sprite's image and mask in its slot: its tiles (down the columns first), flips and palette line */
+/* a sprite's image and mask in its slot: its tiles (down the columns first), flips and palette line;
+ * each of its rows written whole (the bytes right of the sprite and the spare word zero), the rows
+ * below it not touched (no blit reads them) */
 static void spr_build(const struct spr *s)
 {
     int sw = s->w / 8, sh = s->h / 8;
     uint8_t *img = spr_img + s->link * SPR_BYTES, *mask = spr_mask + s->link * SPR_BYTES;
-    memset(img, 0, SPR_BYTES);
-    memset(mask, 0, SPR_BYTES);
     for (int ty = 0; ty < s->h; ty++) {
         int row = (s->e & 0x1000) ? s->h - 1 - ty : ty;
+        uint8_t p6[6][SPW], m6[SPW];
+        memset(p6, 0, sizeof p6);
+        memset(m6, 0, sizeof m6);
         for (int tx = 0; tx < sw; tx++) {
             int col = (s->e & 0x0800) ? sw - 1 - tx : tx;
             unsigned t = ((s->e & 0x7FF) + (unsigned)(col * sh + (row >> 3))) & 0x7FF;
-            uint8_t p6[6], m;
-            cell_row(t | (s->e & 0x6800), row & 7, p6, &m);
-            for (int k = 0; k < 6; k++) {
-                uint32_t o = (uint32_t)(ty * 6 + k) * SPW + (uint32_t)tx;
-                img[o] = p6[k];
-                mask[o] = m;
-            }
+            uint8_t p[6], m;
+            cell_row(t | (s->e & 0x6800), row & 7, p, &m);
+            for (int k = 0; k < 6; k++) p6[k][tx] = p[k];
+            m6[tx] = m;
+        }
+        for (int k = 0; k < 6; k++) {
+            memcpy(img + (uint32_t)(ty * 6 + k) * SPW, p6[k], SPW);
+            memcpy(mask + (uint32_t)(ty * 6 + k) * SPW, m6, SPW);
         }
     }
     spr_key[s->link].e = (uint16_t)s->e;
@@ -455,6 +459,7 @@ void obj_update(void)
     } else {
         blit_wait();                                      /* (the CPU writes the bitmaps the blits read) */
         for (int i = 0; i < 64 * 32; i++) {               /* the rink's cells that changed */
+            if (!tiles && !d->plane_dirty[1]) break;
             if (!tiles && !(i & 7) && !d->cell_dirty[1][i >> 3]) { i += 7; continue; }
             int w = (d->cell_dirty[1][i >> 3] >> (i & 7) & 1) || (tiles && tile_dirty_used(d->cell[1][i]));
             if (!w) continue;
@@ -465,7 +470,7 @@ void obj_update(void)
                 if (x < 256) add(chg[b], &nchg[b], &full[b], x + 512, y, 8, 8);
             }
         }
-        if (d->any_cell_dirty || tiles) a_changes(tiles);
+        if (d->plane_dirty[0] || d->plane_dirty[2] || tiles) a_changes(tiles);
     }
     int b = obj.shown ^ 1;
     uint8_t *buf = obj.buf[b];
@@ -522,9 +527,10 @@ void obj_update(void)
     b_py0[b] = obj.py0;
     b_aver[b] = a_ver;
     obj.shown = b;
-    memset(d->tile_dirty, 0, sizeof d->tile_dirty);
-    memset(d->cell_dirty, 0, sizeof d->cell_dirty);
+    if (d->any_tile_dirty) memset(d->tile_dirty, 0, sizeof d->tile_dirty);
+    for (int k = 0; k < 3; k++) if (d->plane_dirty[k]) memset(d->cell_dirty[k], 0, sizeof d->cell_dirty[k]);
     d->any_tile_dirty = d->any_cell_dirty = d->layout_dirty = d->sprites_dirty = d->scroll_dirty = 0;
+    d->plane_dirty[0] = d->plane_dirty[1] = d->plane_dirty[2] = 0;
 }
 
 void obj_leave(void) { active = 0; b_px0[0] = b_px0[1] = -1; }

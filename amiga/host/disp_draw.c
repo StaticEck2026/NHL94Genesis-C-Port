@@ -409,5 +409,6 @@ void draw_update(void)
     memset(d->tile_dirty, 0, sizeof d->tile_dirty);
     memset(d->cell_dirty, 0, sizeof d->cell_dirty);
     d->any_tile_dirty = d->any_cell_dirty = d->layout_dirty = d->sprites_dirty = d->scroll_dirty = 0;
+    d->plane_dirty[0] = d->plane_dirty[1] = d->plane_dirty[2] = 0;
     first = 0;
 }

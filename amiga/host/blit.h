@@ -20,6 +20,9 @@ struct blit {
 #define MINTERM_COPY_A 0xF0                               /* D = A */
 #define MINTERM_COOKIE 0xCA                               /* D = A ? B : C */
 
-void blit_run(const struct blit *bl);                     /* waits for the one before, then starts it */
-void blit_wait(void);                                     /* until the last one has finished */
+void blit_run(const struct blit *bl);                     /* queued; started as the blitter finishes the ones before */
+void blit_wait(void);                                     /* until the queue is empty and the last one has finished */
+void blit_when_done(void (*fn)(void));                    /* fn once the queue is empty (at once if it is) */
+void blit_async(int on);                                  /* on: the queue runs from the blitter's interrupt (the machine taken) */
+void blit_irq(void);                                      /* (the level 3 handler's, on the blitter's interrupt) */
 extern uint32_t blit_count, blit_words;

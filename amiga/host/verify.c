@@ -74,6 +74,7 @@ struct keep {
     int show, pal;                              /* NHL94VFY <script> SHOW [PAL]: the picture on screen (P6.5), checked by its planes' hash */
     long frames_max;
     int play;                                   /* NHL94VFY PLAY: the game itself, on screen, played with the Amiga's controllers; Esc quits */
+    int timing;                                 /* NHL94VFY <script> SHOW TIME: no hashes (the speed alone) */
     volatile ULONG *dbg;                        /* the debug block in Chip RAM (screen.h), for the whole run */                            /* NHL94VFY <script> ... FRAMES n: stop after n passes */
     int profile, profiling;                     /* NHL94VFY <script> PROFILE [FIRST LAST]: asked for, and running */
     long prof_first, prof_last;                 /* the passes sampled (all of them when none are named) */
@@ -176,8 +177,8 @@ void plat_frame_done(long frame)
             obj_window(wp);
             h = planes_hash32(wp);
         } else h = (ref || made) ? planes_hash32(screen_plane) : 0;
-        if (objmode) { blit_wait(); screen_present_obj(obj.buf[obj.shown], obj.px0, obj.py0); }
-        else screen_present();
+        if (objmode) { screen_prepare_obj(obj.buf[obj.shown], obj.px0, obj.py0); blit_when_done(screen_commit); }   /* (shown once its blits are done) */
+        else { blit_wait(); screen_present(); }
         if (sound_on) { sound_frame(); audio_apply(); }
         screen_dbg[5] = 3;
         screen_wait_vblank();
@@ -297,10 +298,10 @@ static void run_one(void)
     }
     const char *ext = K->show ? "p32" : K->audio ? "a32" : K->intent ? "i32" : "h32";
     libc_format(path, sizeof path, "PROGDIR:refs/%s.%s", t->name, ext);
-    ref = K->play ? NULL : libc_load(path, &n);
+    ref = K->play || K->timing ? NULL : libc_load(path, &n);
     ref_len = ref ? n / 4 : 0;
-    made = ref || K->play ? NULL : malloc((size_t)t->frames * 4);
-    if (!ref && !K->play) logf_("%s: no reference on this disk: its hashes go to PROGDIR:%s.%s for amiga/tools/h32compare.py\n", t->name, t->name, ext);
+    made = ref || K->play || K->timing ? NULL : malloc((size_t)t->frames * 4);
+    if (!ref && !K->play && !K->timing) logf_("%s: no reference on this disk: its hashes go to PROGDIR:%s.%s for amiga/tools/h32compare.py\n", t->name, t->name, ext);
     if (K->intent) logf_("%s: INTENT: the hashes are of the display requests, and the pass times include the hashing\n", t->name);
     over = K->profile || K->play ? NULL : malloc(OVER_MAX * 8);
     nover = 0;
@@ -331,7 +332,7 @@ static void run_one(void)
         draw_reset(screen_plane);
         obj_chip = (UBYTE *)CALL(SysBase, LVO_AllocMem, REG(D0, OBJ_CHIP_BYTES), REG(D1, MEMF_CHIP | MEMF_CLEAR));
         win_planes = malloc(6 * DRAW_PLANE_BYTES);
-        if (obj_chip) obj_reset(obj_chip);
+        if (obj_chip) { obj_reset(obj_chip); blit_async(1); }
         else logf_("%s: SHOW: no Chip RAM for the scrolled scene; every picture composed\n", t->name);
         was_obj = 0;
         snd_chip = (UBYTE *)CALL(SysBase, LVO_AllocMem, REG(D0, SOUND_CHIP_BYTES), REG(D1, MEMF_CHIP | MEMF_CLEAR));
@@ -352,6 +353,7 @@ static void run_one(void)
         show_on = 0;
         prof_on = 0;
         if (K->dbg) K->dbg[5] = 10;
+        blit_async(0);
         if (K->play) input_stop();
         screen_close();
         if (K->dbg) K->dbg[5] = 11;
@@ -505,6 +507,8 @@ LONG amiga_main(const char *args, LONG arglen)
     }
     for (LONG i = 0; i + 4 <= arglen; i++)
         if (!memcmp(args + i, "PLAY", 4)) { K->play = K->show = 1; K->only = 0; K->frames_max = 0x7FFFFFFF; }
+    for (LONG i = 0; i + 4 <= arglen; i++)
+        if (!memcmp(args + i, "TIME", 4)) K->timing = 1;
     if (K->show) K->intent = 0;
     for (LONG i = 0; i + 7 <= arglen; i++) {
         if (memcmp(args + i, "FRAMES ", 7)) continue;

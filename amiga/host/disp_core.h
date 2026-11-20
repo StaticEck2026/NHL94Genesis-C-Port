@@ -35,10 +35,11 @@ struct disp {
     uint32_t base[3], size[3];                            /* the tables of A, B and the window: VRAM address and bytes */
     uint32_t hscroll, sprites, sprites_size;
     /* marks for the drawing side (disp_draw.c clears them when it has drawn) */
-    uint8_t special[1024];                                /* each 64-byte block of VRAM: nonzero when a table (cells, sprites, scroll) lies in it */
+    uint8_t special[1024];                                /* each 64-byte block of VRAM: the tables in it (1 cells, 2 sprites, 4 scroll) */
     uint8_t tile_dirty[DISP_TILES / 8];                   /* a tile's pixels changed */
     uint8_t cell_dirty[3][DISP_PLANE_CELLS / 8];          /* a cell of A, B or the window was written */
     uint8_t any_tile_dirty, any_cell_dirty, layout_dirty; /* layout_dirty: a register that places or sizes the picture */
+    uint8_t plane_dirty[3];                               /* a cell of A, B or the window was written */
     uint8_t scroll_dirty;                                 /* a scroll entry in use was written */
     uint8_t sprites_dirty;                                /* a byte of the sprite table was written */
     uint32_t cells_written, tile_bytes_written;

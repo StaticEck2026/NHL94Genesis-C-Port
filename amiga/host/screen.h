@@ -16,6 +16,8 @@ void screen_present(void);                /* the copper list for the state disp_
 /* the same for the scrolled scene (disp_obj.c): a buffer of six interleaved planes, OBJ_RW bytes a
  * plane line and 256 lines, shown from pixel px0 of line py0 (the lines wrap at 256) */
 void screen_present_obj(const UBYTE *buf, int px0, int py0);
+void screen_prepare_obj(const UBYTE *buf, int px0, int py0);   /* its copper list built, not yet taken ... */
+void screen_commit(void);                                       /* ... until this (blit.c's queue end: the buffer is finished) */
 void screen_wait_vblank(void);            /* until the next vertical blank begins */
 ULONG screen_lines(void);                 /* raster lines since screen_open: the time base while the machine is taken */
 int screen_frame_lines(void);             /* lines a frame of this beam */

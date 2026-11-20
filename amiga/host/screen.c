@@ -76,7 +76,7 @@ static void build(UWORD *c)
     *c = 0xFFFE;
 }
 
-void screen_present_obj(const UBYTE *buf, int px0, int py0)
+void screen_prepare_obj(const UBYTE *buf, int px0, int py0)
 {
     const struct disp *d = &disp;
     UWORD *c = cop[cop_next];
@@ -97,14 +97,33 @@ void screen_present_obj(const UBYTE *buf, int px0, int py0)
     c = colours(c);
     wait_line(c, -1, 0);
     int split = 256 - py0;                                /* the screen line where the buffer's line 0 comes round again */
-    if (split < 224) {
-        c = wait_line(c, vstart + split - 1, 0xD0);   /* (after the last fetch of the line before: 12 moves end before the next fetch) */
+    int split_done = split >= 224;
+    for (int l = 0; l < 224; l += 8) {                    /* (the profiler's copper interrupts and the split, in line order) */
+        if (!split_done && split - 1 <= l) {
+            c = wait_line(c, vstart + split - 1, 0xD0);   /* (after the last fetch of the line before: 12 moves end before the next fetch) */
+            c = plane_ptrs(c, buf + 2 * w0, OBJ_RW);
+            split_done = 1;
+        }
+        if (profiling && vstart + l < 0xFF) { c = wait_line(c, vstart + l, 0x06); c = mv(c, INTREQ, 0x8010); }
+    }
+    if (!split_done) {
+        c = wait_line(c, vstart + split - 1, 0xD0);
         c = plane_ptrs(c, buf + 2 * w0, OBJ_RW);
     }
     *c++ = 0xFFFF;
     *c = 0xFFFE;
-    CREGL(COP1LC) = (ULONG)cop[cop_next];
+}
+
+void screen_commit(void)
+{
+    CREGL(COP1LC) = (ULONG)cop[cop_next];                 /* (taken by the copper at the next vertical blank) */
     cop_next ^= 1;
+}
+
+void screen_present_obj(const UBYTE *buf, int px0, int py0)
+{
+    screen_prepare_obj(buf, px0, py0);
+    screen_commit();
 }
 
 static UWORD *colours(UWORD *c)

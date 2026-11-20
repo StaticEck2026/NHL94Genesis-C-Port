@@ -42,8 +42,9 @@ static void layout(void)
     /* which 64-byte blocks of VRAM hold a table: a write anywhere else is only a tile's pixels */
     memset(d->special, 0, sizeof d->special);
     uint32_t at[5] = { d->base[0], d->base[1], d->base[2], d->sprites, d->hscroll }, n[5] = { d->size[0], d->size[1], d->size[2], d->sprites_size, 0x380 };
+    static const uint8_t kind[5] = { 1, 1, 1, 2, 4 };
     for (int t = 0; t < 5; t++)
-        for (uint32_t o = 0; o < n[t] + 63; o += 64) d->special[((at[t] + o) & 0xFFFF) >> 6] = 1;
+        for (uint32_t o = 0; o < n[t] + 63; o += 64) d->special[((at[t] + o) & 0xFFFF) >> 6] |= kind[t];
 }
 
 /* a cell map taken again from what was sent to its table's addresses, and the tiles' use counts */
@@ -72,6 +73,7 @@ void disp_reg(int r, uint8_t v)
     uint32_t base[3] = { disp.base[0], disp.base[1], disp.base[2] }, size[3] = { disp.size[0], disp.size[1], disp.size[2] };
     uint32_t hs = disp.hscroll, sp = disp.sprites, spn = disp.sprites_size;
     disp.reg[r] = v;
+    if ((1u << r) & 0x7303Cu) {                           /* (only 2-5, 12, 13, 16-18 place the tables or size the picture) */
     layout();
     int moved = 0;
     for (int k = 0; k < 3; k++) if (base[k] != disp.base[k] || size[k] != disp.size[k]) { reseed(k); moved = 1; }
@@ -80,6 +82,7 @@ void disp_reg(int r, uint8_t v)
     if (sp != disp.sprites || spn != disp.sprites_size) {
         for (uint32_t i = 0; i < 0x280; i++) disp.spr[i] = disp_byte((uint16_t)(disp.sprites + i));   /* (the latched bytes stay: the VDP's do)*/
         disp.sprites_dirty = 1;
+    }
     }
     if (r == 11) disp.scroll_dirty = 1;
     /* a register that places, sizes or scrolls the picture means the bitmap is drawn again. Not
@@ -141,6 +144,7 @@ static void put(uint16_t a, uint8_t b)
         d->uses[*c & 0x7FF]++;
         d->cell_dirty[k][o >> 4] |= (uint8_t)(1 << ((o >> 1) & 7));
         d->any_cell_dirty = 1;
+        d->plane_dirty[k] = 1;
         table = 1;
     }
     if (table) d->cells_written++; else d->tile_bytes_written++;
@@ -161,9 +165,26 @@ static inline void tile_word(uint16_t a, uint16_t w)
 }
 
 void disp_vram_byte(uint16_t a, uint8_t b) { put(a, b); }
+/* a word in the sprite table only: the tile cache, the table's bytes and the latched entries */
+static void sprite_word(uint16_t a, uint16_t w)
+{
+    struct disp *d = &disp;
+    uint32_t off = (uint16_t)(a - d->sprites);
+    if (off < d->sprites_size) {
+        uint8_t hi = (uint8_t)(w >> 8), lo = (uint8_t)w;
+        if ((off & 7) < 4 && (d->sat[off] != hi || d->sat[off + 1] != lo)) { d->sat[off] = hi; d->sat[off + 1] = lo; d->sprites_dirty = 1; }
+        if (d->spr[off] != hi || d->spr[off + 1] != lo) { d->spr[off] = hi; d->spr[off + 1] = lo; d->sprites_dirty = 1; }
+    }
+    tile_word(a, w);
+}
+
 void disp_vram_word(uint16_t a, uint16_t w)
 {
-    if (!(a & 1) && !disp.special[a >> 6]) { tile_word(a, w); return; }
+    if (!(a & 1)) {
+        uint8_t k = disp.special[a >> 6];
+        if (!k) { tile_word(a, w); return; }
+        if (k == 2) { sprite_word(a, w); return; }
+    }
     put(a, (uint8_t)(w >> 8));
     put((uint16_t)(a + 1), (uint8_t)w);
 }
@@ -172,7 +193,9 @@ void disp_vram_block(uint16_t a, const uint8_t *src, uint32_t words)
 {
     if (a & 1) { for (uint32_t k = 0; k < 2 * words; k++) put((uint16_t)(a + k), src[k]); return; }
     for (; words; words--, src += 2, a = (uint16_t)(a + 2)) {
-        if (!disp.special[a >> 6]) tile_word(a, (uint16_t)(src[0] << 8 | src[1]));
+        uint8_t k = disp.special[a >> 6];
+        if (!k) tile_word(a, (uint16_t)(src[0] << 8 | src[1]));
+        else if (k == 2) sprite_word(a, (uint16_t)(src[0] << 8 | src[1]));
         else { put(a, src[0]); put((uint16_t)(a + 1), src[1]); }
     }
 }

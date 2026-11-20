@@ -20,15 +20,14 @@ uint32_t blit_count, blit_words;
 #define BLTAMOD 0x064
 #define BLTDMOD 0x066
 
-void blit_wait(void)
+static void hw_wait(void)
 {
     (void)CREG(DMACONR);                                  /* (the first read after a start can miss BBUSY) */
     while (CREG(DMACONR) & 0x4000) { }
 }
 
-void blit_run(const struct blit *bl)
+static void start(const struct blit *bl)
 {
-    blit_wait();
     CREG(BLTCON0) = bl->con0;
     CREG(BLTCON1) = bl->con1;
     CREG(BLTAFWM) = bl->fwm;
@@ -40,14 +39,64 @@ void blit_run(const struct blit *bl)
     CREG(BLTDMOD) = (UWORD)bl->dmod;
     CREG(BLTSIZV) = bl->h;
     CREG(BLTSIZH) = bl->w;                                /* (starts it) */
+}
+
+/* the queue: the main program adds at the tail, the interrupt takes from the head */
+#define QN 256
+static struct blit q[QN];
+static volatile int qh, qt, running, async;
+static void (*volatile done_fn)(void);
+
+void blit_async(int on)
+{
+    blit_wait();
+    async = on;
+    CREG(INTREQ) = 0x0040;
+    CREG(INTENA) = on ? 0x8040 : 0x0040;                  /* BLIT */
+}
+
+void blit_irq(void)                                       /* the blitter finished: the next one, or the queue's end */
+{
+    if (qh != qt) { start(&q[qh]); qh = (qh + 1) % QN; return; }
+    running = 0;
+    if (done_fn) { void (*f)(void) = done_fn; done_fn = 0; f(); }
+}
+
+void blit_run(const struct blit *bl)
+{
     blit_count++;
     blit_words += (uint32_t)bl->w * bl->h;
+    if (!async) { hw_wait(); start(bl); return; }
+    for (;;) {
+        CREG(INTENA) = 0x0040;
+        if (!running) { running = 1; start(bl); CREG(INTENA) = 0x8040; return; }
+        if ((qt + 1) % QN != qh) { q[qt] = *bl; qt = (qt + 1) % QN; CREG(INTENA) = 0x8040; return; }
+        CREG(INTENA) = 0x8040;                            /* (full: let the blitter take some) */
+    }
+}
+
+void blit_wait(void)
+{
+    if (async) while (running || qh != qt) { }
+    hw_wait();
+}
+
+void blit_when_done(void (*fn)(void))
+{
+    if (!async) { hw_wait(); fn(); return; }
+    CREG(INTENA) = 0x0040;
+    if (!running && qh == qt) { CREG(INTENA) = 0x8040; fn(); return; }
+    done_fn = fn;
+    CREG(INTENA) = 0x8040;
 }
 #else
 /* the host's model of the same blit */
 static inline uint16_t rd(const uint8_t *p) { return (uint16_t)(p[0] << 8 | p[1]); }
 
 void blit_wait(void) { }
+void blit_when_done(void (*fn)(void)) { fn(); }
+void blit_async(int on) { (void)on; }
+void blit_irq(void) { }
 
 void blit_run(const struct blit *bl)
 {
