@@ -28,6 +28,51 @@ Gates passed on a stock A1200 (machine, Kickstart): A-...
 Tested by, on: <date>, <log name>
 ```
 
+## 0.5.1 (2026-11-20), phases P5 and P6: faster logic, and the display requests checked
+
+ADFs: `nhl94-aga-v0.5.1.adf` (public). For the owner of the ROM, made by `make -C amiga verify-disks`
+and never published: `nhl94-aga-v0.5.1-private-verify.adf`, `nhl94-aga-v0.5.1-private-intent.adf`,
+`nhl94-rom-a.adf` and `nhl94-rom-b.adf`. Test sheet: amiga/tests/v0.5.1.md. There is still no picture
+or sound.
+
+Added:
+* `NHL94VFY <script> INTENT` (gate A-DISPLAY-INTENT): hashes every display request the game makes in
+  a pass (tiles, cells, fills and copies in VRAM, palette, scroll, layout registers) and checks it
+  against the reference (`refs/NAME.i32` on the private intent disk; without it the hashes are written
+  beside the program for `amiga/tools/h32compare.py`).
+* `NHL94VFY <script> PROFILE FIRST LAST`: the sampling profiler for a window of passes, 30 samples a
+  frame, none taken during the program's own per-frame check.
+* `NAME.over` (every pass longer than one frame) marks the passes whose screen is black afterwards (a
+  screen being built). `amiga/tools/overreport.py` and `speedcheck.py` read it; `speedcheck.py` compares
+  the long passes with the cartridge's own, by rank.
+
+Changed:
+* The game's logic is faster (same results, checked on every pass). Emulated A1200 with 8 MB Fast RAM,
+  0.5.0 -> 0.5.1: mean pass 4 to 10 ms -> 1.0 to 3.9 ms of a 16.7 ms frame; the longest pass (a rink
+  being loaded) 1.9 s -> 0.3 s, where the cartridge takes 0.9 s. What changed: DMAs go to the display
+  side as blocks; a VDP word, a 32-bit command and a fill each take a short path; link-time
+  optimisation; reads of the cartridge and of RAM by 68000 address take one load; the game's tile
+  colour remap is replaced by a table-driven one for the 68020 (`amiga/host/hot.c`; `make HOT=0`
+  builds without it).
+* A VRAM copy reaches the display side as one request, and vertical-scroll entries are handed over.
+* The disk's ReadMe names the machine the port now targets: an A1200 with Fast RAM (D-14).
+
+Fixed:
+* Nothing reported from hardware yet.
+
+Known issues:
+* All numbers are from a cycle-exact emulated A1200 (D-13). No real A1200 has run this yet.
+* With Fast RAM, a few passes still take longer than a frame with a picture on screen: the in-game
+  roster screen as its list scrolls (15 to 17 ms a pass), the save RAM check at power-on (about
+  0.1 s, once), and a handful before fades.
+* On a stock 2 MB A1200 the logic alone averages 9 ms a pass and about one pass in seven is over a
+  frame (records_game, emulated).
+
+Gates passed (emulated A1200, Kickstart 39.106, 8 MB Fast RAM; provisional under D-13): A-LOGIC, 7
+scripts, 69,293 frames, 0 differing. A-DISPLAY-INTENT, 7 scripts, 69,293 passes, 0 differing. A-LEGAL
+on the public ADF (D-12).
+Tested by, on: the agent, 2026-11-20, in PUAE (amiga/tools/puaerun.py). Real hardware: not yet.
+
 ## 0.5.0 (2026-11-20), phase P5: the game's logic on the A1200
 
 ADFs: `nhl94-aga-v0.5.0-private-verify.adf` with `nhl94-rom-a.adf` and `nhl94-rom-b.adf`. These are
