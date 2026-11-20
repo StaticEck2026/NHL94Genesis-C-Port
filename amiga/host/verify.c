@@ -25,6 +25,9 @@
 #include "hash.h"
 #include "intent.h"
 #include "prof.h"
+#include "disp_core.h"
+#include "disp_draw.h"
+#include "screen.h"
 
 const char nhl94vfy_vertag[] __attribute__((used)) = "\0$VER: NHL94VFY " NHL94AGA_VERSION " (" NHL94AGA_DATE ") " NHL94AGA_COMMIT;
 
@@ -49,7 +52,8 @@ static const struct test { const char *name; long frames; const char *script; } 
 #define NTESTS (int)(sizeof tests / sizeof tests[0])
 
 /* what survives the game's power on: kept in exec memory, its address in .keep */
-struct result { long frames, bad, first_bad, max_us, max_frame, first_us, over90, over100, aborted, noref; unsigned long long sum_us; uint32_t dmas, commands; };
+struct result { long frames, bad, first_bad, max_us, max_frame, first_us, over90, over100, aborted, noref; unsigned long long sum_us; uint32_t dmas, commands;
+                long draw_max, draw_max_frame, late, late_shown; unsigned long long draw_sum; };   /* (SHOW: the drawing's time, passes shown late) */
 struct keep {
     void *sys, *dos, *timer;
     const uint8_t *rom;
@@ -60,6 +64,8 @@ struct keep {
     ULONG eclock_hz;
     int only;                                   /* -1: every test */
     int intent;                                 /* NHL94VFY <script> INTENT: check the display requests (A-DISPLAY-INTENT) */
+    int show, pal;                              /* NHL94VFY <script> SHOW [PAL]: the picture on screen (P6.5), checked by its planes' hash */
+    long frames_max;                            /* NHL94VFY <script> ... FRAMES n: stop after n passes */
     int profile, profiling;                     /* NHL94VFY <script> PROFILE [FIRST LAST]: asked for, and running */
     long prof_first, prof_last;                 /* the passes sampled (all of them when none are named) */
 };
@@ -102,7 +108,10 @@ static long script_len, frames_wanted, test_index;
 static const uint32_t *ref;
 static uint32_t *over;                           /* the passes longer than a frame: (frame, microseconds) pairs, for NAME.over */
 static long nover;
-static int intent_on;                            /* (K->intent, beside the hooks that test it for every word) */
+static int intent_on, show_on;                   /* (K->intent and K->show, beside the hooks that test them for every word) */
+static ULONG t_lines, last_vb;
+static uint16_t *times;                          /* (SHOW: each pass's logic and drawing in raster lines, for NAME.drw) */                   /* (SHOW: the time base is the beam, raster lines; the E clock stops while the machine is taken) */
+static long line_ns(void) { return screen_pal ? 64000 : 63556; }
 #define OVER_MAX 4096
 static uint32_t *made;                           /* (no reference on the disk: the hashes, written for the host to compare) */
 static ULONG ref_len, t_start;
@@ -120,7 +129,33 @@ uint16_t plat_buttons(int pad, long h)
 void plat_frame_done(long frame)
 {
     if (K->profiling) prof_sample(0);                     /* (this check is not the game's time) */
-    long us = to_us(eclock() - t_start);
+    long us, draw_us = 0;
+    uint32_t h;
+    if (show_on) {                                        /* the pass, then its picture: drawn, then shown from the next vblank */
+        ULONG t1 = screen_lines();
+        draw_update();
+        ULONG t2 = screen_lines();
+        us = (long)((t1 - t_lines) * (ULONG)line_ns() / 1000);
+        draw_us = (long)((t2 - t1) * (ULONG)line_ns() / 1000);
+        if (times && frame <= frames_wanted) {
+            ULONG l = t1 - t_lines, dl = t2 - t1;
+            times[2 * (frame - 1)] = (uint16_t)(l > 0xFFFF ? 0xFFFF : l);
+            times[2 * (frame - 1) + 1] = (uint16_t)(dl > 0xFFFF ? 0xFFFF : dl);
+        }
+        if (frame > 1) {
+            R->draw_sum += (unsigned long long)draw_us;
+            if (draw_us > R->draw_max) { R->draw_max = draw_us; R->draw_max_frame = frame; }
+            if (vb_count > last_vb + 1) { R->late++; if (disp.reg[1] & 0x40) { int lit = 0; for (int i = 0; i < 64; i++) lit |= disp.pal[i]; if (lit) R->late_shown++; } }
+        }
+        h = (ref || made) ? planes_hash32(screen_plane) : 0;
+        screen_present();
+        screen_wait_vblank();
+        last_vb = vb_count;
+    } else {
+        us = to_us(eclock() - t_start);
+        h = intent_on ? intent_take() : ram_hash32((const uint8_t *)&g);
+    }
+    us += draw_us;
     if (frame == 1) R->first_us = us;                     /* (power on: the cartridge's checksum of 1 MB) */
     else {
         R->sum_us += (unsigned long long)us;
@@ -137,7 +172,6 @@ void plat_frame_done(long frame)
             }
         }
     }
-    uint32_t h = intent_on ? intent_take() : ram_hash32((const uint8_t *)&g);
     if ((ULONG)frame <= ref_len && h != ref[frame - 1]) { if (!R->bad) R->first_bad = frame; R->bad++; }
     if (made && frame <= frames_wanted) made[frame - 1] = h;
     R->frames = frame;
@@ -145,20 +179,22 @@ void plat_frame_done(long frame)
     if (!(CIAA_PRA & 0x40)) { R->aborted = 1; longjmp(stop, 1); }
     if (frame >= frames_wanted) longjmp(stop, 1);
     if (K->profiling) prof_sample(frame + 1 >= K->prof_first && frame + 1 <= K->prof_last);
-    t_start = eclock();
+    if (show_on) t_lines = screen_lines();
+    else t_start = eclock();
 }
 
-/* the display requests: no backend yet (P6); with INTENT they go into the pass's hash (intent.h) */
-void plat_vram_byte(uint16_t a, uint8_t b) { if (intent_on) intent_byte(a, b); }
-uint8_t plat_vram_read(uint16_t a) { (void)a; return 0; }
-void plat_vram_block(uint16_t a, const uint8_t *src, uint32_t words) { if (intent_on) intent_block(a, src, words); }
-void plat_vram_copy(uint16_t a, uint16_t src, uint32_t n, uint8_t step) { if (intent_on) intent_copy(a, src, n, step); }
-void plat_vsram(int i, uint16_t v) { if (intent_on) intent_vsram(i, v); }
-void plat_vram_word(uint16_t a, uint16_t w) { if (intent_on) intent_word(a, w); }
-void plat_vram_long(uint16_t a, uint32_t v) { if (intent_on) intent_long(a, v); }
-void plat_vram_fill(uint16_t a, uint8_t b, uint32_t n, uint8_t step) { if (intent_on) intent_fill(a, b, n, step); }
-void plat_cram(int i, uint16_t c) { if (intent_on) intent_cram(i, c); }
-void plat_reg(int r, uint8_t v) { if (intent_on) intent_reg(r, v); }
+/* the display requests: with SHOW to the display backend (disp_core.c); with INTENT into the pass's
+ * hash (intent.h) */
+void plat_vram_byte(uint16_t a, uint8_t b) { if (show_on) disp_vram_byte(a, b); if (intent_on) intent_byte(a, b); }
+uint8_t plat_vram_read(uint16_t a) { return show_on ? disp_byte(a) : 0; }
+void plat_vram_block(uint16_t a, const uint8_t *src, uint32_t words) { if (show_on) disp_vram_block(a, src, words); if (intent_on) intent_block(a, src, words); }
+void plat_vram_copy(uint16_t a, uint16_t src, uint32_t n, uint8_t step) { if (show_on) disp_vram_copy(a, src, n, step); if (intent_on) intent_copy(a, src, n, step); }
+void plat_vsram(int i, uint16_t v) { if (show_on) disp_vsram(i, v); if (intent_on) intent_vsram(i, v); }
+void plat_vram_word(uint16_t a, uint16_t w) { if (show_on) disp_vram_word(a, w); if (intent_on) intent_word(a, w); }
+void plat_vram_long(uint16_t a, uint32_t v) { if (show_on) disp_vram_long(a, v); if (intent_on) intent_long(a, v); }
+void plat_vram_fill(uint16_t a, uint8_t b, uint32_t n, uint8_t step) { if (show_on) disp_vram_fill(a, b, n, step); if (intent_on) intent_fill(a, b, n, step); }
+void plat_cram(int i, uint16_t c) { if (show_on) disp_cram(i, c); if (intent_on) intent_cram(i, c); }
+void plat_reg(int r, uint8_t v) { if (show_on) disp_reg(r, v); if (intent_on) intent_reg(r, v); }
 void plat_sound_command(const uint8_t *z) { (void)z; }
 void plat_sound_restart(const uint8_t *z) { (void)z; }
 void plat_sound_reset(int running) { (void)running; }
@@ -222,7 +258,7 @@ static void run_one(void)
         if (!text || !parse_script(text)) { logf_("%s: cannot read %s\n", t->name, path); R->aborted = 3; return; }
         free(text);
     }
-    const char *ext = K->intent ? "i32" : "h32";
+    const char *ext = K->show ? "p32" : K->intent ? "i32" : "h32";
     libc_format(path, sizeof path, "PROGDIR:refs/%s.%s", t->name, ext);
     ref = libc_load(path, &n);
     ref_len = ref ? n / 4 : 0;
@@ -231,7 +267,7 @@ static void run_one(void)
     if (K->intent) logf_("%s: INTENT: the hashes are of the display requests, and the pass times include the hashing\n", t->name);
     over = K->profile ? NULL : malloc(OVER_MAX * 8);
     nover = 0;
-    frames_wanted = t->frames;
+    frames_wanted = K->frames_max && K->frames_max < t->frames ? K->frames_max : t->frames;
     memcpy(rules, rule_classic, sizeof rules);            /* the vanilla game (native/vanilla/stubs.c) */
     rom_cart = K->rom;
     rom_art = NULL;
@@ -241,13 +277,34 @@ static void run_one(void)
     intent_on = K->intent;
     intent_take();
     CALL(DOSBase, -198, REG(D1, 150));                    /* Delay(3 s): the floppy motor stops before Forbid */
-    int profiling = K->profile && prof_start();
+    int profiling = !K->show && K->profile && prof_start();
     K->profiling = profiling;
-    if (profiling) prof_sample(K->prof_first <= 1);
+    if (K->show) {
+        if (!screen_open(K->pal)) { logf_("%s: SHOW: not enough Chip RAM for the screen\n", t->name); R->aborted = 3; return; }
+        disp_reset();
+        draw_reset(screen_plane);
+        times = malloc((size_t)frames_wanted * 4);
+        if (times) memset(times, 0, (size_t)frames_wanted * 4);
+        show_on = 1;
+        last_vb = vb_count;
+        t_lines = screen_lines();
+    } else if (profiling) prof_sample(K->prof_first <= 1);
     else CALL(SysBase, LVO_Forbid);
     t_start = eclock();
     if (!setjmp(stop)) run68k(Start);
-    if (profiling) {
+    if (show_on) {
+        show_on = 0;
+        screen_close();
+        if (times) {                                      /* NAME.drw: big-endian (logic lines, drawing lines) a pass */
+            libc_format(path, sizeof path, "PROGDIR:%s.drw", t->name);
+            libc_save(path, times, (ULONG)R->frames * 4);
+            free(times);
+            times = NULL;
+        }
+        logf_("%s: SHOW: drawing mean %ld us, max %ld us at frame %ld; %ld passes shown late (%ld with a picture); %lu screen cells drawn, %lu whole screens\n",
+              t->name, (long)(R->draw_sum / (unsigned long long)(R->frames > 1 ? R->frames - 1 : 1)), R->draw_max, R->draw_max_frame,
+              R->late, R->late_shown, (unsigned long)draw.cells_drawn, (unsigned long)draw.full_updates);
+    } else if (profiling) {
         K->profiling = 0;
         prof_stop();
         libc_format(path, sizeof path, "PROGDIR:%s.prof", t->name);
@@ -358,6 +415,16 @@ LONG amiga_main(const char *args, LONG arglen)
     K->prof_last = 0x7FFFFFFF;
     for (LONG i = 0; i + 6 <= arglen; i++)
         if (!memcmp(args + i, "INTENT", 6)) K->intent = 1;
+    for (LONG i = 0; i + 4 <= arglen; i++) {
+        if (!memcmp(args + i, "SHOW", 4)) K->show = 1;
+        if (i + 3 <= arglen && !memcmp(args + i, "PAL", 3)) K->pal = 1;
+    }
+    if (K->show) K->intent = 0;
+    for (LONG i = 0; i + 7 <= arglen; i++) {
+        if (memcmp(args + i, "FRAMES ", 7)) continue;
+        for (i += 7; i < arglen && args[i] >= '0' && args[i] <= '9'; i++) K->frames_max = K->frames_max * 10 + (args[i] - '0');
+        break;
+    }
     for (LONG i = 0; i + 7 <= arglen; i++) {
         if (memcmp(args + i, "PROFILE", 7)) continue;
         K->profile = 1;
@@ -393,9 +460,9 @@ LONG amiga_main(const char *args, LONG arglen)
             free(stack);
             long bad = 0, ran = 0, noref = 0;
             for (int i = 0; i < NTESTS; i++) { bad += K->r[i].bad; if (K->r[i].frames) ran++; noref += K->r[i].noref; }
-            const char *gate = K->intent ? "A-DISPLAY-INTENT" : "A-LOGIC";
+            const char *gate = K->show ? "A-DISPLAY-PLANES" : K->intent ? "A-DISPLAY-INTENT" : "A-LOGIC";
             if (noref) logf_("%s: checked on the host (%ld scripts' hashes written beside the program)\n", gate, noref);
-            else logf_("%s: %s (%ld scripts, %ld differing %s)\n", gate, bad || !ran ? "FAIL" : "PASS", ran, bad, K->intent ? "passes" : "frames");
+            else logf_("%s: %s (%ld scripts, %ld differing %s)\n", gate, bad || !ran ? "FAIL" : "PASS", ran, bad, K->intent || K->show ? "passes" : "frames");
             rc = bad || !ran ? 10 : 0;
         }
         free((void *)K->rom);

@@ -39,7 +39,7 @@ GOBJS   := $(GSRC:../src/%.c=$(B)/game/%.o)
 # HOT=0 leaves out host/hot.c (the game's routines replaced for the 68020): the reference build
 HOT     ?= 1
 VOBJS   := $(B)/start.o $(B)/verify.o $(B)/hal_core.o $(B)/libc_amiga.o $(B)/prof.o $(B)/prof_asm.o $(B)/libc.o \
-           $(if $(filter 1,$(HOT)),$(B)/hot.o,) $(GOBJS)
+           $(B)/disp_core.o $(B)/disp_draw.o $(B)/screen.o $(if $(filter 1,$(HOT)),$(B)/hot.o,) $(GOBJS)
 ADF     := $(B)/nhl94-aga-v$(VERSION).adf
 
 all: $(B)/NHL94AGA $(B)/NHL94VFY $(ADF)
@@ -58,7 +58,7 @@ $(BESRC)/.stamp: $(wildcard ../src/*.c ../src/*.h) tools/mem_be.py
 $(B)/game/%.o: ../src/%.c $(BESRC)/.stamp
 	@mkdir -p $(B)/game
 	$(CC) $(GFLAGS) $(GAMEWARN) -c $(BESRC)/$*.c -o $@
-$(B)/verify.o $(B)/hal_core.o $(B)/libc_amiga.o $(B)/prof.o $(B)/hot.o $(B)/disp_core.o $(B)/disp_draw.o: $(B)/%.o: host/%.c host/hal_core.h host/hash.h host/libc_amiga.h host/prof.h host/amiga.h $(B)/version.h $(BESRC)/.stamp
+$(B)/verify.o $(B)/hal_core.o $(B)/libc_amiga.o $(B)/prof.o $(B)/hot.o $(B)/disp_core.o $(B)/disp_draw.o $(B)/screen.o: $(B)/%.o: host/%.c host/hal_core.h host/hash.h host/libc_amiga.h host/prof.h host/amiga.h host/disp_core.h host/disp_draw.h host/screen.h $(B)/version.h $(BESRC)/.stamp
 	$(CC) $(GFLAGS) -c $< -o $@
 $(B)/NHL94VFY.elf: $(VOBJS) host/amiga.ld
 	$(CC) -mcpu=68020 -msoft-float -O2 -flto -fno-pic -nostdlib -static -Wl,-T,host/amiga.ld -Wl,--emit-relocs \

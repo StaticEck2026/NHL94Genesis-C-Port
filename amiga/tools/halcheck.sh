@@ -2,7 +2,8 @@
 # Build amiga/tools/halcheck and check amiga/host/hal_core.c against every vanilla golden run
 # (out/golden, from make golden). Writes out/amiga/ref/<run>.h32, the per-frame work RAM hashes the
 # Amiga verify build must reproduce (A-LOGIC), and <run>.i32, the per-pass hashes of the display
-# requests (A-DISPLAY-INTENT, amiga/host/intent.h). Both are ROM-derived: never in git or on a released
+# requests (A-DISPLAY-INTENT, amiga/host/intent.h), and <run>.p32, the per-pass hashes of the six bitplanes
+# the display backend draws (A-DISPLAY-PLANES, NHL94VFY <script> SHOW). All are ROM-derived: never in git or on a released
 # disk. Usage: amiga/tools/halcheck.sh ROM
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -19,7 +20,7 @@ fail=0
 check() {   # name frames [script]
     local g=out/golden/$1.golden
     [ -f "$g" ] || { echo "$1: no $g (make golden)"; fail=1; return; }
-    ./build/amiga-tools/halcheck -o "out/amiga/ref/$1.h32" -i "out/amiga/ref/$1.i32" "$ROM" "$g" "$(( $2 - 1 ))" ${3:+"$S/$3"} || fail=1
+    ./build/amiga-tools/halcheck -o "out/amiga/ref/$1.h32" -i "out/amiga/ref/$1.i32" -p "out/amiga/ref/$1.p32" "$ROM" "$g" "$(( $2 - 1 ))" ${3:+"$S/$3"} || fail=1
 }
 check attract 7200
 check full_game 16000 full_game_30s.txt

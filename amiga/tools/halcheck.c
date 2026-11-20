@@ -222,7 +222,7 @@ static void dline(int line, uint16_t *o)
     }
 }
 
-static FILE *golden, *out, *intent_out, *stats;
+static FILE *golden, *out, *intent_out, *stats, *planes_out;
 
 /* HALCHECK_STATS=FILE: a line a frame of what the picture is made of, for the display backend's
  * design (amiga/tools/dispstats.py reads it): the mode, each plane's visible cells that are not
@@ -334,6 +334,34 @@ void plat_frame_done(long frame)
         }
         hw = fnv(hw, pic, (size_t)disp.width * 2);
     }
+    {                                                     /* HALCHECK_PPM=DIR HALCHECK_FRAMES=...: the reference picture of those frames */
+        const char *dir = getenv("HALCHECK_PPM"), *which = getenv("HALCHECK_FRAMES");
+        char key[24], list[4096];
+        snprintf(key, sizeof key, ",%ld,", frame);
+        if (dir && which && snprintf(list, sizeof list, ",%s,", which) > 0 && strstr(list, key)) {
+            static const uint8_t lv[8] = { 0, 34, 68, 102, 136, 170, 204, 238 };
+            char path[512];
+            snprintf(path, sizeof path, "%s/frame-%05ld.ppm", dir, frame);
+            FILE *f = fopen(path, "wb");
+            if (f) {
+                fprintf(f, "P6 %d 224 255\n", disp.width);
+                for (int y = 0; y < 224; y++) {
+                    dline(y, pic);
+                    for (int x = 0; x < disp.width; x++) {
+                        uint16_t c = (disp.reg[1] & 0x40) ? pic[x] : disp.pal[disp.reg[7] & 0x3F];
+                        uint8_t rgb[3] = { lv[(c >> 1) & 7], lv[(c >> 5) & 7], lv[(c >> 9) & 7] };
+                        fwrite(rgb, 1, 3, f);
+                    }
+                }
+                fclose(f);
+            }
+        }
+    }
+    if (planes_out) {                                     /* the Amiga's reference for its planes (NHL94VFY <script> SHOW) */
+        uint32_t h = planes_hash32(draw.plane);
+        uint8_t be[4] = { (uint8_t)(h >> 24), (uint8_t)(h >> 16), (uint8_t)(h >> 8), (uint8_t)h };
+        fwrite(be, 1, 4, planes_out);
+    }
     if (out) {                                            /* the Amiga's reference: ram_hash32, big-endian */
         uint32_t h = ram_hash32(ram);
         uint8_t be[4] = { (uint8_t)(h >> 24), (uint8_t)(h >> 16), (uint8_t)(h >> 8), (uint8_t)h };
@@ -363,21 +391,22 @@ void plat_frame_done(long frame)
 int main(int argc, char **argv_in)
 {
     char **volatile argv = argv_in;
-    const char *volatile outpath = NULL, *volatile intentpath = NULL;
+    const char *volatile outpath = NULL, *volatile intentpath = NULL, *volatile planespath = NULL;
     volatile int nargs = argc;
-    while (nargs > 2 && (!strcmp(argv[1], "-o") || !strcmp(argv[1], "-i"))) {
-        if (argv[1][1] == 'o') outpath = argv[2]; else intentpath = argv[2];
+    while (nargs > 2 && (!strcmp(argv[1], "-o") || !strcmp(argv[1], "-i") || !strcmp(argv[1], "-p"))) {
+        if (argv[1][1] == 'o') outpath = argv[2]; else if (argv[1][1] == 'i') intentpath = argv[2]; else planespath = argv[2];
         argv += 2;
         nargs -= 2;
     }
     argc = nargs;
-    if (argc < 4) { fprintf(stderr, "usage: halcheck [-o RAM_HASHES] [-i INTENT_HASHES] ROM GOLDEN FRAMES [SCRIPT]\n"); return 2; }
+    if (argc < 4) { fprintf(stderr, "usage: halcheck [-o RAM_HASHES] [-i INTENT_HASHES] [-p PLANE_HASHES] ROM GOLDEN FRAMES [SCRIPT]\n"); return 2; }
     if (!rom_load(argv[1])) { fprintf(stderr, "cannot load %s\n", argv[1]); return 2; }
     golden = fopen(argv[2], "r");
     frames_wanted = atol(argv[3]);
     if (argc > 4 && !load_script(argv[4])) return 2;
     if (outpath) out = fopen(outpath, "wb");
     if (intentpath) intent_out = fopen(intentpath, "wb");
+    if (planespath) planes_out = fopen(planespath, "wb");
     if (getenv("HALCHECK_STATS")) stats = fopen(getenv("HALCHECK_STATS"), "w");
     memcpy(rules, rule_classic, sizeof rules);            /* (the vanilla game: native/vanilla/stubs.c) */
     rom_art = NULL;
@@ -385,10 +414,13 @@ int main(int argc, char **argv_in)
     rosters_retail();
     core_power_on(0);
     disp_reset();
-    draw_reset();
+    static uint8_t planes[6][DRAW_PLANE_BYTES];
+    uint8_t *const pp[6] = { planes[0], planes[1], planes[2], planes[3], planes[4], planes[5] };
+    draw_reset(pp);
     if (!setjmp(done)) run68k(Start);
     if (out) fclose(out);
     if (intent_out) fclose(intent_out);
+    if (planes_out) fclose(planes_out);
     if (stats) fclose(stats);
     printf("halcheck %s: %ld frames checked, RAM differs in %ld, VDP in %ld; %ld passes with display requests", argv[2], checked, bad_ram, bad_vdp, intent_passes);
     if (first_bad >= 0) printf(", first at frame %ld", first_bad);
@@ -398,7 +430,7 @@ int main(int argc, char **argv_in)
     if (bad_disp) printf(", first at frame %ld", first_bad_disp);
     printf("; the drawn bitplanes differ in %ld", bad_draw);
     if (bad_draw) printf(", first at frame %ld", first_bad_draw);
-    printf(" (%u screen cells drawn in %u updates, %u of them whole screens)", draw.cells_drawn, draw.updates, draw.full_updates);
+    printf(" (%u screen cells drawn in %u updates, %u of them whole screens; line bytes %u planar, %u a pixel at a time)", draw.cells_drawn, draw.updates, draw.full_updates, draw.bytes_fast, draw.bytes_slow);
     if (getenv("HALCHECK_WHY")) for (int i = 0; i < 26; i++) if (disp.why[i]) printf(" why[%d]=%u", i, disp.why[i]);
     printf(" (DMAs %u, fills %u, VRAM copies %u, VRAM reads %u, sound commands %u, restarts %u, other $96 %u)\n",
            core.dmas, core.fills, core.copies, core.vram_reads, core.commands, core.restarts, core.odd_targets);

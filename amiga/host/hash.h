@@ -18,3 +18,23 @@ static inline uint32_t ram_hash32(const uint8_t *b)
     }
     return a ^ (s << 7 | s >> 25);
 }
+
+/* the per-pass hash of the six bitplanes disp_draw.c keeps (A-DISPLAY-PLANES): the same sums over
+ * each plane's 2,240 big-endian longs (40 bytes x 224 lines), plane 0 first */
+static inline uint32_t planes_hash32(uint8_t *const plane[6])
+{
+    uint32_t a = 0x9E3779B9u, s = 0;
+    for (int k = 0; k < 6; k++) {
+        const uint8_t *b = plane[k];
+        for (uint32_t i = 0; i < 40u * 224u; i += 4) {
+#if defined(__mc68000__) || defined(__mc68020__)
+            uint32_t w = *(const uint32_t *)(b + i);
+#else
+            uint32_t w = (uint32_t)b[i] << 24 | (uint32_t)b[i + 1] << 16 | (uint32_t)b[i + 2] << 8 | b[i + 3];
+#endif
+            a += w;
+            s += a;
+        }
+    }
+    return a ^ (s << 7 | s >> 25);
+}

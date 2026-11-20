@@ -105,12 +105,13 @@ def main(core_so, kick, seconds, command, out, disks):
     av = core.load(m3u)
     fps = av.timing.fps or 50.0
     total = int(seconds * fps)
-    shots = {int(t * fps) for t in (10, 20, 30, 60, 120, 300, 600, 1200, 2400) if t < seconds}
+    times = [float(t) for t in os.environ['PUAE_SHOTS'].split(',')] if os.environ.get('PUAE_SHOTS') else (10, 20, 30, 60, 120, 300, 600, 1200, 2400)
+    shots = {int(t * fps) for t in times if t < seconds}   # (PUAE_SHOTS=t1,t2,...: screenshots at those emulated seconds)
     print('puaerun: %d frames at %.3f Hz, %dx%d' % (total, fps, av.geometry.base_width, av.geometry.base_height), flush=True)
     for n in range(1, total + 1):
         core.run(1)
         if n in shots:
-            core.screenshot(os.path.join(out, 'shot-%05ds.png' % int(n / fps)))
+            core.screenshot(os.path.join(out, 'shot-%07.1fs.png' % (n / fps)))
         if n % int(fps * 300) == 0:
             print('puaerun: %d s emulated' % int(n / fps), flush=True)
     core.screenshot(os.path.join(out, 'shot-end.png'))
