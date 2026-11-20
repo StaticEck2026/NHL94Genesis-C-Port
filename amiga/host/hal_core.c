@@ -203,7 +203,7 @@ static void ctrl16(uint16_t w)
     wmode_sync();
 }
 
-static void data16(uint16_t w)
+__attribute__((noinline)) static void data16(uint16_t w)
 {
     core.pending = 0;
     bus_write(w);
@@ -249,8 +249,10 @@ void vdp_ctrl(uint32_t v)
 }
 
 /* a data word: straight to the display backend when it is a plain VRAM write at an even address
- * (name-table cells, tile words, the clears: wmode 1), otherwise the general path */
-void vdp_data(uint16_t v)
+ * (name-table cells, tile words, the clears: wmode 1), otherwise the general path. Always inlined into
+ * the game's loops by the Amiga build's link-time optimisation: left to itself the compiler puts the
+ * fast path out of line in the largest ones (the VRAM clear, the tile loads) */
+__attribute__((always_inline)) inline void vdp_data(uint16_t v)
 {
     struct core *c = &core;
     if (c->wmode == 1) {
@@ -263,7 +265,7 @@ void vdp_data(uint16_t v)
     data16(v);
 }
 
-void vdp_data32(uint32_t v)
+__attribute__((always_inline)) inline void vdp_data32(uint32_t v)
 {
     struct core *c = &core;
     if (c->wmode == 1) {

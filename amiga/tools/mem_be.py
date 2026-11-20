@@ -6,6 +6,12 @@ offsets in the machine's own byte order (ram_host_ is the identity there, src/ra
   ram_byte_  &g + offset, without the 128 KB ram_host_ table lookup
   r16, r32   one load each instead of two or four byte loads
   w16, w32   one store each
+  m8         a 68000 address that may be the cartridge's or RAM's: the cartridge is tried first (one
+             compare for most reads instead of two)
+  m16, m32   one load when the whole value is in the cartridge or in RAM, else byte by byte as before
+
+In src/middle.c, remap (tiles through a colour table, the largest part of a rink load on the 68020) is
+made weak, so amiga/host/hot.c's replacement is linked instead; the original stays as the reference.
 
 The game's code is the same; only how a RAM access is carried out differs. Gate A-LOGIC (every pass's
 work RAM hash against the reference) checks the result on every build. Each rewrite must match
@@ -27,7 +33,26 @@ REWRITES = [
      "static inline void w16(rp p, int32_t off, uint16_t v) { __builtin_memcpy(ram_byte_(p, off), &v, 2); }"),
     ("static inline void w32(rp p, int32_t off, uint32_t v) { w16(p, off, (uint16_t)(v >> 16)); w16(p, off + 2, (uint16_t)v); }",
      "static inline void w32(rp p, int32_t off, uint32_t v) { __builtin_memcpy(ram_byte_(p, off), &v, 4); }"),
+    ("static inline uint8_t m8(uint32_t a) { return is_ram(a) ? r8(ram_at(a), 0) : rom_ptr(a & 0xFFFFFF)[0]; }",
+     "static inline uint8_t m8(uint32_t a) { uint32_t x = a & 0xFFFFFF; return x < ROM_SIZE ? rom_cart[x] : is_ram(a) ? r8(ram_at(a), 0) : rom_ptr(x)[0]; }"),
+    ("static inline uint16_t m16(uint32_t a) { return (uint16_t)(m8(a) << 8 | m8(a + 1)); }",
+     "static inline uint16_t m16(uint32_t a)\n{\n"
+     "    uint32_t x = a & 0xFFFFFF;\n    uint16_t v;\n"
+     "    if (x < ROM_SIZE - 1) { __builtin_memcpy(&v, rom_cart + x, 2); return v; }\n"
+     "    if (x >= 0xE00000 && (uint16_t)x < 0xFFFF) { __builtin_memcpy(&v, (const uint8_t *)&g + (uint16_t)x, 2); return v; }\n"
+     "    return (uint16_t)(m8(a) << 8 | m8(a + 1));\n}"),
+    ("static inline uint32_t m32(uint32_t a) { return (uint32_t)m16(a) << 16 | m16(a + 2); }",
+     "static inline uint32_t m32(uint32_t a)\n{\n"
+     "    uint32_t x = a & 0xFFFFFF, v;\n"
+     "    if (x < ROM_SIZE - 3) { __builtin_memcpy(&v, rom_cart + x, 4); return v; }\n"
+     "    if (x >= 0xE00000 && (uint16_t)x < 0xFFFD) { __builtin_memcpy(&v, (const uint8_t *)&g + (uint16_t)x, 4); return v; }\n"
+     "    return (uint32_t)m16(a) << 16 | m16(a + 2);\n}"),
 ]
+
+# routines replaced for the 68020 (amiga/host/hot.c): made weak in the copy, src/ unchanged
+WEAK = {
+    'middle.c': ["void remap(uint32_t src, uint32_t table, uint16_t words, uint16_t vram)\n{"],
+}
 
 
 def main(src, out):
@@ -40,6 +65,10 @@ def main(src, out):
                 if data.count(old) != 1:
                     sys.exit('mem_be.py: src/mem.h no longer has: ' + old[:70])
                 data = data.replace(old, new)
+        for sig in WEAK.get(os.path.basename(f), []):
+            if data.count(sig) != 1:
+                sys.exit('mem_be.py: src/%s no longer has: %s' % (os.path.basename(f), sig.split('\n')[0]))
+            data = data.replace(sig, '__attribute__((weak)) ' + sig)
         if not os.path.exists(dst) or open(dst).read() != data:
             open(dst, 'w').write(data)
 
