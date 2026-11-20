@@ -23,6 +23,7 @@
 #include "rosters.h"
 #include "hal_core.h"
 #include "hash.h"
+#include "prof.h"
 
 const char nhl94vfy_vertag[] __attribute__((used)) = "\0$VER: NHL94VFY " NHL94AGA_VERSION " (" NHL94AGA_DATE ") " NHL94AGA_COMMIT;
 
@@ -57,6 +58,7 @@ struct keep {
     ULONG loglen;
     ULONG eclock_hz;
     int only;                                   /* -1: every test */
+    int profile;                                /* NHL94VFY <script> PROFILE */
 };
 static struct keep *K __attribute__((section(".keep")));
 
@@ -122,7 +124,7 @@ void plat_frame_done(long frame)
     if ((ULONG)frame <= ref_len && h != ref[frame - 1]) { if (!R->bad) R->first_bad = frame; R->bad++; }
     if (made && frame <= frames_wanted) made[frame - 1] = h;
     R->frames = frame;
-    if (frame % 1200 == 0) logf_("  %s: frame %ld, %ld differ\n", tests[test_index].name, frame, R->bad);
+    if (frame % 1200 == 0 && !K->profile) logf_("  %s: frame %ld, %ld differ\n", tests[test_index].name, frame, R->bad);
     if (!(CIAA_PRA & 0x40)) { R->aborted = 1; longjmp(stop, 1); }
     if (frame >= frames_wanted) longjmp(stop, 1);
     t_start = eclock();
@@ -130,6 +132,7 @@ void plat_frame_done(long frame)
 
 void plat_vram_byte(uint16_t a, uint8_t b) { (void)a; (void)b; }
 uint8_t plat_vram_read(uint16_t a) { (void)a; return 0; }
+void plat_vram_block(uint16_t a, const uint8_t *src, uint32_t words) { (void)a; (void)src; (void)words; }
 void plat_cram(int i, uint16_t c) { (void)i; (void)c; }
 void plat_reg(int r, uint8_t v) { (void)r; (void)v; }
 void plat_sound_command(const uint8_t *z) { (void)z; }
@@ -208,10 +211,18 @@ static void run_one(void)
     rosters_retail();
     core_power_on(0);
     CALL(DOSBase, -198, REG(D1, 150));                    /* Delay(3 s): the floppy motor stops before Forbid */
-    CALL(SysBase, LVO_Forbid);
+    int profiling = K->profile && prof_start();
+    if (!profiling) CALL(SysBase, LVO_Forbid);
     t_start = eclock();
     if (!setjmp(stop)) run68k(Start);
-    CALL(SysBase, LVO_Permit);
+    if (profiling) {
+        prof_stop();
+        libc_format(path, sizeof path, "PROGDIR:%s.prof", t->name);
+        prof_save(path);
+        logf_("%s: profile written to %s (pass times are not measured while profiling)\n", t->name, path);
+    } else {
+        CALL(SysBase, LVO_Permit);
+    }
     R->dmas = core.dmas;
     R->commands = core.commands;
     if (made) {
@@ -305,6 +316,8 @@ LONG amiga_main(const char *args, LONG arglen)
         size_t n = strlen(tests[i].name);
         if ((size_t)arglen > n && !memcmp(args, tests[i].name, n) && (args[n] == '\n' || args[n] == ' ' || args[n] == '\r')) K->only = i;
     }
+    for (LONG i = 0; i + 7 <= arglen; i++)
+        if (!memcmp(args + i, "PROFILE", 7)) K->profile = 1;
     logs("NHL94VFY " NHL94AGA_VERSION " " NHL94AGA_COMMIT " (P5: the game's logic on this Amiga, checked against the reference)\n");
     UWORD attn = EXEC_ATTNFLAGS(SysBase);
     logf_("Kickstart %u.%u, CPU %s, chip free %lu KB, other free %lu KB\n", EXEC_VERSION(SysBase), EXEC_SOFTVER(SysBase),

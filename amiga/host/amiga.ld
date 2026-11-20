@@ -6,7 +6,7 @@
 ENTRY(_start)
 SECTIONS
 {
-    .text 0x00000000 : { *(.text.start) *(.text .text.*) *(.rodata .rodata.*) . = ALIGN(4); }
+    .text 0x00000000 : { *(.text.start) *(.text .text.*) *(.rodata .rodata.*) . = ALIGN(4); __text_end = .; }
     .data 0x10000000 : {
         __data_start = .;
         *(.data .data.*) *(.sdata .sdata.*)

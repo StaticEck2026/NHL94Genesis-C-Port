@@ -31,6 +31,7 @@ static uint64_t fnv(uint64_t h, const void *p, size_t n)
 static uint8_t vram[0x10000];
 void plat_vram_byte(uint16_t a, uint8_t b) { vram[a] = b; }
 uint8_t plat_vram_read(uint16_t a) { return vram[a]; }
+void plat_vram_block(uint16_t a, const uint8_t *src, uint32_t words) { memcpy(vram + a, src, 2 * (size_t)words); }
 void plat_cram(int i, uint16_t c) { (void)i; (void)c; }
 void plat_reg(int r, uint8_t v) { (void)r; (void)v; }
 void plat_sound_command(const uint8_t *z) { (void)z; }

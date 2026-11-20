@@ -34,7 +34,7 @@ GAMEWARN := -Wno-unused-const-variable -Wno-error=array-bounds
 # src/ itself is unchanged
 GSRC    := $(filter-out ../src/z80.c,$(wildcard ../src/*.c))
 GOBJS   := $(GSRC:../src/%.c=$(B)/game/%.o)
-VOBJS   := $(B)/start.o $(B)/verify.o $(B)/hal_core.o $(B)/libc_amiga.o $(B)/libc.o $(GOBJS)
+VOBJS   := $(B)/start.o $(B)/verify.o $(B)/hal_core.o $(B)/libc_amiga.o $(B)/prof.o $(B)/libc.o $(GOBJS)
 ADF     := $(B)/nhl94-aga-v$(VERSION).adf
 
 all: $(B)/NHL94AGA $(B)/NHL94VFY $(ADF)
@@ -53,7 +53,7 @@ $(BESRC)/.stamp: $(wildcard ../src/*.c ../src/*.h) tools/mem_be.py
 $(B)/game/%.o: ../src/%.c $(BESRC)/.stamp
 	@mkdir -p $(B)/game
 	$(CC) $(GFLAGS) $(GAMEWARN) -c $(BESRC)/$*.c -o $@
-$(B)/verify.o $(B)/hal_core.o $(B)/libc_amiga.o: $(B)/%.o: host/%.c host/hal_core.h host/hash.h host/libc_amiga.h host/amiga.h $(B)/version.h $(BESRC)/.stamp
+$(B)/verify.o $(B)/hal_core.o $(B)/libc_amiga.o $(B)/prof.o: $(B)/%.o: host/%.c host/hal_core.h host/hash.h host/libc_amiga.h host/prof.h host/amiga.h $(B)/version.h $(BESRC)/.stamp
 	$(CC) $(GFLAGS) -c $< -o $@
 $(B)/NHL94VFY.elf: $(VOBJS) host/amiga.ld
 	$(LD) -T host/amiga.ld --emit-relocs -nostdlib -o $@ $(VOBJS) $(LIBGCC) -Map $(B)/NHL94VFY.map

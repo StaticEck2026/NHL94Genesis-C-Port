@@ -19,7 +19,7 @@ struct core {
     uint16_t sr;
     /* counts */
     long frames, handshakes;
-    uint32_t dmas, fills, copies, vram_reads, commands, restarts, odd_targets;
+    uint32_t dmas, dma_blocks, fills, copies, vram_reads, commands, restarts, odd_targets;
 };
 extern struct core core;
 
@@ -30,6 +30,7 @@ int core_vdp_width(void);
 void plat_frame_done(long frame);                 /* at each game-loop wait, before the vblank */
 uint16_t plat_buttons(int pad, long handshake);   /* a pad's buttons (MDRT_PAD_* bits) for the next frame */
 void plat_vram_byte(uint16_t addr, uint8_t b);    /* a VRAM byte the game wrote: the display backend */
+void plat_vram_block(uint16_t addr, const uint8_t *src, uint32_t words);   /* a DMA's words to VRAM at an even address, in order */
 uint8_t plat_vram_read(uint16_t addr);            /* a VRAM byte back (VRAM copy and reads: counted) */
 void plat_cram(int index, uint16_t colour);       /* a palette entry (9 bits, $0BGR) */
 void plat_reg(int r, uint8_t v);                  /* a VDP register */

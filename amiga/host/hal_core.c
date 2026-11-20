@@ -86,18 +86,54 @@ static void dma_end(void)
     core.reg[19] = core.reg[20] = 0;
 }
 
-/* a DMA from the 68000's memory: the words the game names, cartridge or work RAM */
+/* the bytes at a 68000 address as one run the DMA can copy in a block: the cartridge's (as stored), or
+ * work RAM's where the machine is big-endian (struct g at the 68000's offsets, src/ram.c); NULL
+ * elsewhere (a little-endian host's RAM, art past the cartridge), which goes word by word */
+static const uint8_t *dma_source(uint32_t a, uint32_t *bytes_left)
+{
+    a &= 0xFFFFFF;
+    if (a < ROM_SIZE) { *bytes_left = ROM_SIZE - a; return rom_ptr(a); }
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    if (a >= 0xFF0000) { *bytes_left = 0x1000000 - a; return (const uint8_t *)&g + (a & 0xFFFF); }
+#endif
+    return 0;
+}
+
+/* a DMA from the 68000's memory: the words the game names, cartridge or work RAM. VRAM targets with an
+ * auto-increment of 2 at an even address go to the display backend as blocks (plat_vram_block); the
+ * rest word by word, as the VDP takes them */
 static void dma_68k(void)
 {
     uint32_t n = dma_length();
     uint32_t bank = (uint32_t)(core.reg[23] & 0x7F) << 17;
     uint32_t src = (uint32_t)(core.reg[22] << 8 | core.reg[21]) << 1;
     core.dmas++;
-    do {
+    while (n) {
+        uint32_t avail = 0;
+        const uint8_t *p = ((core.code & 0x0F) == 0x01 && core.reg[15] == 2 && !(core.addr & 1)) ? dma_source(bank | src, &avail) : 0;
+        if (p) {
+            uint32_t words = n;
+            if (words > (0x20000 - src) / 2) words = (0x20000 - src) / 2;          /* (the source wraps in its bank) */
+            if (words > avail / 2) words = avail / 2;
+            if (words > (0x10000u - core.addr) / 2) words = (0x10000u - core.addr) / 2;   /* (VRAM wraps) */
+            if (words) {
+                plat_vram_block(core.addr, p, words);
+                for (uint32_t k = words > 4 ? words - 4 : 0; k < words; k++) {          /* (the FIFO's last words) */
+                    core.fifo[core.fifo_idx] = (uint16_t)(p[2 * k] << 8 | p[2 * k + 1]);
+                    core.fifo_idx = (uint8_t)((core.fifo_idx + 1) & 3);
+                }
+                core.addr = (uint16_t)(core.addr + 2 * words);
+                src = (src + 2 * words) & 0x1FFFF;
+                n -= words;
+                core.dma_blocks++;
+                continue;
+            }
+        }
         uint16_t w = (uint16_t)(m8(bank | src) << 8 | m8(bank | (src + 1)));
         src = (src + 2) & 0x1FFFF;
         bus_write(w);
-    } while (--n);
+        n--;
+    }
     dma_end();
 }
 
