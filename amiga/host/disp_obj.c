@@ -27,6 +27,9 @@ static int a_ver, b_px0[2] = { -1, -1 }, b_py0[2], b_aver[2];   /* plane A's ver
 static uint8_t *a_img, *a_lo_m, *a_hi_m;                 /* plane A and the window on screen: six interleaved planes, and the masks by priority (repeated a plane row) */
 static uint8_t a_lo[SH][SWMAX], a_hi[SH][SWMAX];               /* the masks again, a byte a cell row, for the CPU */
 static int16_t a_row_lo[SH], a_row_hi[SH];               /* bytes of each line with something in the mask */
+static uint16_t a_ent[SH / 8][SWMAX];                     /* the entry each screen cell of A was drawn from */
+static struct rect apend[2][MAXR];                        /* plane A's cells changed since each buffer was drawn (screen rectangles) */
+static int napend[2];
 static uint8_t *spr_img, *spr_mask;                       /* the sprite images, NSPR of them by link number */
 static struct { uint16_t e; uint8_t size, valid; } spr_key[NSPR];
 static uint8_t rev[256];
@@ -87,26 +90,44 @@ static inline void cell_row(unsigned e, int r, uint8_t *p6, uint8_t *mask)
 
 /* ---- the rink bitmap: plane B's cells, and its high-priority pixels as a mask (a plane row each) - */
 
-static void rink_cell(int i)
+static inline void copy_par(uint8_t *d, const uint8_t *src, int n)   /* (src at d's byte parity: longs from the first even byte) */
 {
-    obj.rink_cells++;
-    int cx = i & 63, cy = i >> 6;
-    unsigned e = disp.cell[1][i];
-    rink_hi_cell[i] = 0;
-    for (int r = 0; r < 8; r++) {
-        uint8_t p6[6], m;
-        cell_row(e, r, p6, &m);
-        uint8_t hi = (e & 0x8000) ? m : 0;
-        rink_hi_cell[i] |= hi != 0;
-        int y = cy * 8 + r;
-        for (int copy = 0; copy < 2; copy++) {
-            int bx = cx + copy * 64;
-            if (bx >= OBJ_RW) break;
-            uint8_t *l = obj.rink + y * OBJ_LS + bx, *h = obj.rink_hi + y * OBJ_LS + bx;
-            for (int k = 0; k < 6; k++) { l[k * OBJ_RW] = p6[k]; h[k * OBJ_RW] = hi; }
-            if (cx >= 40) break;                          /* (the first 40 columns are repeated: the widest picture) */
+    if ((uintptr_t)d & 1) { *d++ = *src++; n--; }
+    memcpy(d, src, (size_t)n);
+}
+
+/* the cells cx0 to cx1 of cell row cy, made in Fast RAM a plane row at a time and copied into the
+ * rink bitmap and its mask in longs (Chip RAM byte writes are slow); the first 40 columns again at 64 */
+static void rink_run(int cy, int cx0, int cx1)
+{
+    static uint32_t tl[2][8 * 6][(64 + 4) / 4];
+    int n = cx1 - cx0 + 1, par = cx0 & 1;
+    obj.rink_cells += (uint32_t)n;
+    for (int cx = cx0; cx <= cx1; cx++) {
+        int i = cy * 64 + cx;
+        unsigned e = disp.cell[1][i];
+        uint8_t any = 0;
+        for (int r = 0; r < 8; r++) {
+            uint8_t p6[6], m;
+            cell_row(e, r, p6, &m);
+            uint8_t hi = (e & 0x8000) ? m : 0;
+            any |= hi;
+            for (int k = 0; k < 6; k++) {
+                ((uint8_t *)tl[0][r * 6 + k])[par + cx - cx0] = p6[k];
+                ((uint8_t *)tl[1][r * 6 + k])[par + cx - cx0] = hi;
+            }
         }
+        rink_hi_cell[i] = any != 0;
     }
+    int n1 = cx0 < 40 ? (cx1 < 40 ? cx1 : 39) - cx0 + 1 : 0;
+    for (int r = 0; r < 8; r++)
+        for (int k = 0; k < 6; k++) {
+            uint32_t o = (uint32_t)(cy * 8 + r) * OBJ_LS + (uint32_t)k * OBJ_RW + (uint32_t)cx0;
+            const uint8_t *sl = (const uint8_t *)tl[0][r * 6 + k] + par, *sh = (const uint8_t *)tl[1][r * 6 + k] + par;
+            copy_par(obj.rink + o, sl, n);
+            copy_par(obj.rink_hi + o, sh, n);
+            if (n1) { copy_par(obj.rink + o + 64, sl, n1); copy_par(obj.rink_hi + o + 64, sh, n1); }
+        }
 }
 
 static void add(struct rect *list, int *n, int *overflow, int x, int y, int w, int h)
@@ -223,6 +244,7 @@ static void a_cell(int cx, int cy, int win)
 {
     obj.a_cells++;
     unsigned e = win ? disp.cell[2][cy * disp.win_w + cx] : disp.cell[0][cy * 64 + cx];
+    a_ent[cy][cx] = (uint16_t)e;
     for (int r = 0; r < 8; r++) {
         int y = cy * 8 + r;
         uint8_t p6[6], m;
@@ -248,15 +270,32 @@ static void a_layer(void)                                 /* all of it */
 
 /* the cells of plane A and the window that were written or show a changed tile (the screen's part:
  * A does not scroll in a scrolled scene) */
+/* plane A's cells changed since each buffer was drawn, as screen rectangles (merged along a row, in
+ * apend): restored and cut again there, the rest of plane A staying in the buffer */
+
 static void a_changes(int tiles)
 {
-    a_ver++;
-    for (int cy = 0; cy < SH / 8; cy++)
-        for (int cx = 0; cx < SW; cx++) {
-            int win = in_window(cx, cy), i = win ? cy * disp.win_w + cx : cy * 64 + cx, k = win ? 2 : 0;
-            if (!((disp.cell_dirty[k][i >> 3] >> (i & 7) & 1) || (tiles && tile_dirty_used(disp.cell[k][i])))) continue;
-            a_cell(cx, cy, win);
+    int over = 0;
+    for (int cy = 0; cy < SH / 8; cy++) {
+        int run0 = -1;
+        for (int cx = 0; cx <= SW; cx++) {
+            int ch = 0;
+            if (cx < SW) {
+                int win = in_window(cx, cy), i = win ? cy * disp.win_w + cx : cy * 64 + cx, k = win ? 2 : 0;
+                unsigned e = disp.cell[k][i];
+                int td = tiles && tile_dirty_used(e);
+                if ((disp.cell_dirty[k][i >> 3] >> (i & 7) & 1) && e != a_ent[cy][cx]) ch = 1;
+                if (td) ch = 1;
+                if (ch) a_cell(cx, cy, win);
+            }
+            if (ch && run0 < 0) run0 = cx;
+            if (!ch && run0 >= 0) {
+                for (int b = 0; b < 2; b++) add(apend[b], &napend[b], &over, run0 * 8, cy * 8, (cx - run0) * 8, 8);
+                run0 = -1;
+            }
         }
+    }
+    if (over) a_ver++;                                    /* (too many: plane A drawn again in full) */
 }
 
 /* what changed under plane A this pass: the screen lines (rows) and on each the pixels from row_x0 to
@@ -508,13 +547,14 @@ void obj_update(void)
     int rebuild = !active || d->layout_dirty;
     int tiles = !rebuild && d->any_tile_dirty && used_tiles_changed();
     if (rebuild) {
-        for (int i = 0; i < 64 * 32; i++) rink_cell(i);
+        for (int cy = 0; cy < 32; cy++) rink_run(cy, 0, 63);
         memset(a_row_lo, 0, sizeof a_row_lo);
         memset(a_row_hi, 0, sizeof a_row_hi);
         memset(a_lo, 0, sizeof a_lo);
         memset(a_hi, 0, sizeof a_hi);
         a_layer();
         a_ver++;
+        napend[0] = napend[1] = 0;
         memset(spr_key, 0, sizeof spr_key);
         blit_wait();
         memcpy(obj.buf[0], obj.rink, OBJ_BYTES);
@@ -524,17 +564,20 @@ void obj_update(void)
         obj.rebuilds++;
     } else {
         blit_wait();                                      /* (the CPU writes the bitmaps the blits read) */
-        for (int i = 0; i < 64 * 32; i++) {               /* the rink's cells that changed */
+        int run0 = -1;                                    /* the rink's cells that changed, in runs along their rows */
+        for (int i = 0; i < 64 * 32; i++) {
             if (!tiles && !d->plane_dirty[1]) break;
-            if (!tiles && !(i & 7) && !d->cell_dirty[1][i >> 3]) { i += 7; continue; }
             int w = (d->cell_dirty[1][i >> 3] >> (i & 7) & 1) || (tiles && tile_dirty_used(d->cell[1][i]));
-            if (!w) continue;
-            rink_cell(i);
-            int x = (i & 63) * 8, y = (i >> 6) * 8;
-            for (int b = 0; b < 2; b++) {
-                add(chg[b], &nchg[b], &full[b], x, y, 8, 8);
-                if (x < 320) add(chg[b], &nchg[b], &full[b], x + 512, y, 8, 8);
+            if (w) {
+                if (run0 < 0) run0 = i;
+                int x = (i & 63) * 8, y = (i >> 6) * 8;
+                for (int b = 0; b < 2; b++) {
+                    add(chg[b], &nchg[b], &full[b], x, y, 8, 8);
+                    if (x < 320) add(chg[b], &nchg[b], &full[b], x + 512, y, 8, 8);
+                }
             }
+            if (run0 >= 0 && (!w || (i & 63) == 63)) { rink_run(run0 >> 6, run0 & 63, w ? (i & 63) : (i & 63) - 1); run0 = -1; }
+            if (!tiles && !(i & 7) && !d->cell_dirty[1][i >> 3] && run0 < 0) i += 7;
         }
         if (d->plane_dirty[0] || d->plane_dirty[2] || tiles) a_changes(tiles);
     }
@@ -557,7 +600,14 @@ void obj_update(void)
         for (int i = 0; i < ndone[b]; i++) { op_copy(buf, &done[b][i]); if (stay) mark_rect(rows, &done[b][i]); }
         for (int i = 0; i < nchg[b]; i++) { op_copy(buf, &chg[b][i]); if (stay) mark_rect(rows, &chg[b][i]); }
         if (!stay) for (int i = 0; i < nadone[b]; i++) op_copy(buf, &adone[b][i]);
+        else
+            for (int i = 0; i < napend[b]; i++) {         /* (plane A's changed cells: the rink there again, then A cut there) */
+                struct rect r = { (int16_t)(obj.px0 + apend[b][i].x), (int16_t)((obj.py0 + apend[b][i].y) & 255), apend[b][i].w, apend[b][i].h };
+                op_copy(buf, &r);
+                mark_rect(rows, &r);
+            }
     }
+    napend[b] = 0;
     if (!stay) nadone[b] = 0;
     ndone[b] = nchg[b] = full[b] = 0;
     memset(cpu_line, 0, sizeof cpu_line);

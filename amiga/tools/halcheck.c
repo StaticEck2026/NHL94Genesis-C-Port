@@ -343,12 +343,30 @@ void plat_frame_done(long frame)
                 if (ln[x] != obj_pixel(x, y)) { printf("diff frame %ld at %d,%d: want %d, got %d (px0 %d py0 %d)\n", frame, x, y, ln[x], obj_pixel(x, y), obj.px0, obj.py0); shown++; }
         }
     }
+    if (getenv("HALCHECK_LAYERS")) {                      /* HALCHECK_LAYERS=FILE: each frame's colours of plane A (and window) and of plane B, and how they meet */
+        static FILE *lf;
+        if (!lf) lf = fopen(getenv("HALCHECK_LAYERS"), "w");
+        static uint8_t pa[320], pb[320];
+        uint64_t ua = 0, ub = 0;
+        long a_px = 0, b_under_a_lo = 0, b_hi_over_a = 0;
+        for (int y = 0; y < 224; y++) {
+            disp_layers_line(y, pa, pb);
+            for (int x = 0; x < disp.width; x++) {
+                if (pa[x] & 63) { ua |= 1ull << (pa[x] & 63); a_px++; if (!(pa[x] & 64) && (pb[x] & 63) && (pb[x] & 64)) b_hi_over_a++; }
+                if (pb[x] & 63) ub |= 1ull << (pb[x] & 63);
+                if ((pa[x] & 63) && (pb[x] & 63)) b_under_a_lo++;
+            }
+        }
+        fprintf(lf, "%ld %d A %d B %d apx %ld both %ld bhi %ld %06X\n", frame, disp.width, __builtin_popcountll(ua), __builtin_popcountll(ub), a_px, b_under_a_lo, b_hi_over_a, (unsigned)g.VBint);
+    }
     {                                                     /* HALCHECK_DRAWLOG=FILE: each frame's drawing (for finding what costs) */
         static FILE *dl;
         static uint32_t lc, lf, lw[26];
         if (!dl && getenv("HALCHECK_DRAWLOG")) dl = fopen(getenv("HALCHECK_DRAWLOG"), "w");
         if (dl) {
-            fprintf(dl, "%ld %s %d %u %u", frame, objmode ? "obj" : "draw", disp.width, draw.cells_drawn - lc, draw.full_updates - lf);
+            static uint32_t lb;
+            fprintf(dl, "%ld %s %d %u %u b%u", frame, objmode ? "obj" : "draw", disp.width, draw.cells_drawn - lc, draw.full_updates - lf, blit_words - lb);
+            lb = blit_words;
             for (int i = 0; i < 26; i++) if (disp.why[i] != lw[i]) fprintf(dl, " w%d:%u", i, disp.why[i] - lw[i]);
             fprintf(dl, " %06X\n", (unsigned)g.VBint);
             lc = draw.cells_drawn; lf = draw.full_updates;

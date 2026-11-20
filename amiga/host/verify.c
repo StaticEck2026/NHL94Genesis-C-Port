@@ -59,7 +59,8 @@ static const struct test { const char *name; long frames; const char *script; } 
 
 /* what survives the game's power on: kept in exec memory, its address in .keep */
 struct result { long frames, bad, first_bad, max_us, max_frame, first_us, over90, over100, aborted, noref; unsigned long long sum_us; uint32_t dmas, commands;
-                long draw_max, draw_max_frame, late, late_shown; unsigned long long draw_sum; };   /* (SHOW: the drawing's time, passes shown late) */
+                long draw_max, draw_max_frame, late, late_shown; unsigned long long draw_sum;
+                long skipped, slip; };   /* (SKIP: passes not drawn, and vblanks the game's time fell behind by) */   /* (SHOW: the drawing's time, passes shown late) */
 struct keep {
     void *sys, *dos, *timer;
     const uint8_t *rom;
@@ -75,6 +76,7 @@ struct keep {
     long frames_max;
     int play;                                   /* NHL94VFY PLAY: the game itself, on screen, played with the Amiga's controllers; Esc quits */
     int timing;                                 /* NHL94VFY <script> SHOW TIME: no hashes (the speed alone) */
+    int skip;                                   /* PLAY, and NHL94VFY <script> SHOW SKIP: a pass not drawn when the next one is due (D-18) */
     volatile ULONG *dbg;                        /* the debug block in Chip RAM (screen.h), for the whole run */                            /* NHL94VFY <script> ... FRAMES n: stop after n passes */
     int profile, profiling;                     /* NHL94VFY <script> PROFILE [FIRST LAST]: asked for, and running */
     long prof_first, prof_last;                 /* the passes sampled (all of them when none are named) */
@@ -120,7 +122,8 @@ static const uint32_t *ref;
 static uint32_t *over;                           /* the passes longer than a frame: (frame, microseconds) pairs, for NAME.over */
 static long nover;
 static int intent_on, show_on;                   /* (K->intent and K->show, beside the hooks that test them for every word) */
-static ULONG t_lines, last_vb;
+static ULONG t_lines, last_vb, due;               /* (SKIP: the vblank the pass was due to start at) */
+static int due_set;
 static uint16_t *times;
 static UBYTE *obj_chip, *win_planes, *snd_chip;
 static int sound_on;                             /* (SHOW: sound.c plays the game's sound on Paula) */             /* (SHOW: the scrolled scene's bitmaps in Chip RAM; the window for the planes' hash) */
@@ -146,12 +149,23 @@ void plat_frame_done(long frame)
     if (K->profiling) prof_sample(0);                     /* (this check is not the game's time) */
     long us, draw_us = 0;
     uint32_t h;
+    int drawn = 1;
     if (show_on) {                                        /* the pass, then its picture: drawn, then shown from the next vblank */
         screen_dbg[2] = (ULONG)frame;
         screen_dbg[5] = 1;
         ULONG t1 = screen_lines();
+        /* D-18: the game's passes keep their vblanks; a pass whose next one is due already is not drawn
+         * (what it changed is drawn with the next pass drawn). The next pass is due a vblank after this
+         * one, or as many as its logic took (a long pass is the game's own time, as on the cartridge) */
+        ULONG next_due = 0;
+        if (K->skip) {
+            ULONG T = (ULONG)screen_frame_lines(), f = (t1 - t_lines + T - 1) / T;
+            next_due = due + (f ? f : 1);
+            if (vb_count >= next_due) drawn = 0;
+        }
         int objmode = obj_chip && obj_scene();
-        if (objmode) { obj_update(); was_obj = 1; }
+        if (!drawn) { R->skipped++; }
+        else if (objmode) { obj_update(); was_obj = 1; }
         else {
             if (was_obj) { obj_leave(); draw_invalidate(); was_obj = 0; }
             draw_update();
@@ -171,17 +185,23 @@ void plat_frame_done(long frame)
             if (draw_us > R->draw_max) { R->draw_max = draw_us; R->draw_max_frame = frame; }
             if (vb_count > last_vb + 1) { R->late++; if (disp.reg[1] & 0x40) { int lit = 0; for (int i = 0; i < 64; i++) lit |= disp.pal[i]; if (lit) R->late_shown++; } }
         }
-        if ((ref || made) && objmode && win_planes) {
+        if (!drawn) h = 0;
+        else if ((ref || made) && objmode && win_planes) {
             uint8_t *const wp[6] = { win_planes, win_planes + DRAW_PLANE_BYTES, win_planes + 2 * DRAW_PLANE_BYTES,
                                      win_planes + 3 * DRAW_PLANE_BYTES, win_planes + 4 * DRAW_PLANE_BYTES, win_planes + 5 * DRAW_PLANE_BYTES };
             obj_window(wp);
             h = planes_hash32(wp);
         } else h = (ref || made) ? planes_hash32(screen_plane) : 0;
-        if (objmode) { screen_prepare_obj(obj.buf[obj.shown], obj.px0, obj.py0); blit_when_done(screen_commit); }   /* (shown once its blits are done) */
+        if (!drawn) { }
+        else if (objmode) { screen_prepare_obj(obj.buf[obj.shown], obj.px0, obj.py0); blit_when_done(screen_commit); }   /* (shown once its blits are done) */
         else { blit_wait(); screen_present(); }
         if (sound_on) { sound_frame(); audio_apply(); }
         screen_dbg[5] = 3;
-        screen_wait_vblank();
+        if (K->skip) {
+            while (vb_count < next_due) { }               /* (the next pass's vblank, unless it is past) */
+            if (vb_count > next_due + 3) { R->slip += (long)(vb_count - next_due); next_due = vb_count; }   /* (too far behind to catch up: that time is lost) */
+            due = next_due;
+        } else screen_wait_vblank();
         screen_dbg[5] = 0;
         last_vb = vb_count;
     } else {
@@ -205,7 +225,7 @@ void plat_frame_done(long frame)
             }
         }
     }
-    if ((ULONG)frame <= ref_len && h != ref[frame - 1]) { if (!R->bad) R->first_bad = frame; R->bad++; }
+    if (drawn && (ULONG)frame <= ref_len && h != ref[frame - 1]) { if (!R->bad) R->first_bad = frame; R->bad++; }
     if (made && frame <= frames_wanted) made[frame - 1] = h;
     R->frames = frame;
     if (frame % 1200 == 0 && !K->profile) logf_("  %s: frame %ld, %ld differ\n", tests[test_index].name, frame, R->bad);
@@ -214,6 +234,7 @@ void plat_frame_done(long frame)
     if (K->profiling) prof_sample(frame + 1 >= K->prof_first && frame + 1 <= K->prof_last);
     if (show_on) {
         t_lines = screen_lines();
+        if (!due_set) { due = vb_count; due_set = 1; }
         if (K->profile) prof_on = frame + 1 >= K->prof_first && frame + 1 <= K->prof_last;
     }
     else t_start = eclock();
@@ -382,9 +403,9 @@ static void run_one(void)
             free(times);
             times = NULL;
         }
-        logf_("%s: SHOW: drawing mean %ld us, max %ld us at frame %ld; %ld passes shown late (%ld with a picture); %lu line bytes composed, %lu whole screens; scrolled scene %lu passes, %lu rebuilds, %lu CPU lines\n",
+        logf_("%s: SHOW: drawing mean %ld us, max %ld us at frame %ld; %ld passes shown late (%ld with a picture); %ld not drawn (SKIP), the game %ld vblanks behind; %lu line bytes composed, %lu whole screens; scrolled scene %lu passes, %lu rebuilds, %lu CPU lines\n",
               t->name, (long)(R->draw_sum / (unsigned long long)(R->frames > 1 ? R->frames - 1 : 1)), R->draw_max, R->draw_max_frame,
-              R->late, R->late_shown, (unsigned long)draw.cells_drawn, (unsigned long)draw.full_updates,
+              R->late, R->late_shown, R->skipped, R->slip, (unsigned long)draw.cells_drawn, (unsigned long)draw.full_updates,
               (unsigned long)obj.updates, (unsigned long)obj.rebuilds, (unsigned long)obj.cpu_lines);
     } else if (profiling) {
         K->profiling = 0;
@@ -506,7 +527,9 @@ LONG amiga_main(const char *args, LONG arglen)
         if (i + 3 <= arglen && !memcmp(args + i, "PAL", 3)) K->pal = 1;
     }
     for (LONG i = 0; i + 4 <= arglen; i++)
-        if (!memcmp(args + i, "PLAY", 4)) { K->play = K->show = 1; K->only = 0; K->frames_max = 0x7FFFFFFF; }
+        if (!memcmp(args + i, "PLAY", 4)) { K->play = K->show = K->skip = 1; K->only = 0; K->frames_max = 0x7FFFFFFF; }
+    for (LONG i = 0; i + 4 <= arglen; i++)
+        if (!memcmp(args + i, "SKIP", 4)) K->skip = 1;
     for (LONG i = 0; i + 4 <= arglen; i++)
         if (!memcmp(args + i, "TIME", 4)) K->timing = 1;
     if (K->show) K->intent = 0;

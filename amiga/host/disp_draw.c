@@ -188,6 +188,24 @@ static void compose_line_slow(int line, uint8_t *out)
     }
 }
 
+/* the line's plane A (with the window) and plane B on their own: colour, bit 6 their priority (for
+ * the tools: what a screen is made of) */
+void disp_layers_line(int line, uint8_t *pa, uint8_t *pb)
+{
+    int width = disp.width, w0, w1;
+    static struct layer a, b;
+    window_span(line, &w0, &w1);
+    plane_line(line, 1, hscroll_of(line, 1), 0, &b);
+    plane_line(line, 0, hscroll_of(line, 0), (w0 == 0 && w1 > 0 && w1 < width) ? w1 : 0, &a);
+    for (int x = w0; x < w1; x++) {
+        unsigned e = disp.cell[2][(line >> 3) * disp.win_w + (x >> 3)];
+        int c = pix(e, x & 7, line & 7);
+        a.col[x] = (uint8_t)(c ? (((e >> 13) & 3) << 4) | c : 0);
+        a.pri[x] = (uint8_t)(e >> 15);
+    }
+    for (int x = 0; x < width; x++) { pa[x] = (uint8_t)(a.col[x] | a.pri[x] << 6); pb[x] = (uint8_t)(b.col[x] | b.pri[x] << 6); }
+}
+
 /* ---- eight pixels at a time, in planar form -------------------------------------------------- */
 
 struct lb { uint32_t c; uint32_t o, p4, p5, pr; };        /* c: four colour planes (byte k plane k, from the top); masks in the low byte */

@@ -18,5 +18,6 @@ extern struct draw draw;
 void draw_reset(uint8_t *const planes[6]);                /* the six planes, cleared */
 void draw_update(void);                                   /* at the game's wait: bring the picture up to date */
 void draw_invalidate(void);                               /* the planes were not kept up to date: draw them all next time */
-int disp_compose_line(int line, uint8_t *out);            /* a line's colour numbers a pixel at a time, by the VDP's rules */
+int disp_compose_line(int line, uint8_t *out);
+void disp_layers_line(int line, uint8_t *pa, uint8_t *pb);   /* (tools) */            /* a line's colour numbers a pixel at a time, by the VDP's rules */
 void disp_planar_line(int y, uint8_t *const out[6]);      /* a whole line in six planes, eight pixels at a time, by the VDP's rules */

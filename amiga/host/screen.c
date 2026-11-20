@@ -239,11 +239,15 @@ int screen_frame_lines(void) { return screen_pal ? 312 : 262; }
 
 ULONG screen_lines(void)
 {
-    ULONG n, v;
+    ULONG n, v, pend;
     do {
         n = vb_count;
         v = (ULONG)(CREG(VPOSR) & 7) << 8 | (CREG(VHPOSR) >> 8);
+        pend = CREG(INTREQR) & 0x0020;
     } while (n != vb_count);
+    /* (the beam has gone round but the vertical blank's interrupt is not taken yet, waiting behind
+     * another level 3 handler: that frame counts already, or the time would go back a frame) */
+    if (pend && v < (ULONG)screen_frame_lines() / 2) n++;
     return n * (ULONG)screen_frame_lines() + v;
 }
 
