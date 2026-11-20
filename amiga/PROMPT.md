@@ -24,9 +24,13 @@ Three rules come before everything else:
    and to drivers that program the A1200's own chips (Alice, Lisa, Paula, the CIAs) to do the job the
    Genesis's chips did. Nothing on the Amiga models a Genesis. Section 4 says exactly what that rules
    out.
-2. **Real Amiga hardware is the only test bench.** No emulator (WinUAE, FS-UAE, vAmiga, Amiberry, UAE
-   cores) and no FPGA re-implementation (MiSTer Minimig, Vampire, PiStorm) counts as evidence, and
-   you do not use them. Every state moves forward only on a log from a real A1200 (section 9).
+2. **Real Amiga hardware is the final test bench.** No emulator (WinUAE, FS-UAE, vAmiga, Amiberry, UAE
+   cores) and no FPGA re-implementation (MiSTer Minimig, Vampire, PiStorm) counts as *final* evidence.
+   Every state reaches `PASSED` only on a log from a real A1200 (section 9). **Amended 2026-11-20 by the
+   owner (D-13):** until a real A1200 is available, a UAE-family emulator set up as a stock A1200 as
+   accurately as it allows (cycle-exact 68020 and AGA chipset, 2 MB Chip RAM, no Fast RAM, an A1200
+   Kickstart) is *provisional* evidence. It moves a state to `PASSED (emulated)`. A real A1200 must
+   confirm every gate before 1.0.0. Nothing emulated ever runs inside the Amiga build itself.
 3. **No Overbar.** The Amiga build leaves out Overbar, PulseMan's runtime (`mdrt`), SDL2, the scalers,
    netplay, save states, rewind and the GIF recorder. It is the `VANILLA=1` game (docs/VANILLA.md) with
    an Amiga host around it. The only host controls are Amiga-native ones (section 7.6).

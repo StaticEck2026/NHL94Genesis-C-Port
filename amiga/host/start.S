@@ -5,7 +5,10 @@
 	.globl	_start
 _start:
 	movem.l	%d2-%d7/%a2-%a6,-(%sp)
+	move.l	%d0,-(%sp)		/* the Shell's arguments: length */
+	move.l	%a0,-(%sp)		/* and text */
 	jsr	amiga_main
+	addq.l	#8,%sp
 	movem.l	(%sp)+,%d2-%d7/%a2-%a6
 	rts				/* d0: the return code */
 

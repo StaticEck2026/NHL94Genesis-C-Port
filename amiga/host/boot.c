@@ -244,9 +244,11 @@ static void *open_lib(const char *name, ULONG version) { return (void *)CALL(Sys
 static void close_lib(void *base) { if (base) CALL(SysBase, LVO_CloseLibrary, REG(A1, base)); }
 static ULONG avail(ULONG flags) { return CALL(SysBase, LVO_AvailMem, REG(D1, flags)); }
 
-LONG amiga_main(void);
-LONG amiga_main(void)
+LONG amiga_main(const char *args, LONG arglen);
+LONG amiga_main(const char *args, LONG arglen)
 {
+    ULONG auto_seconds = 0;                           /* NHL94AGA <seconds>: give the machine back by itself (unattended runs) */
+    for (LONG i = 0; i < arglen && args[i] >= '0' && args[i] <= '9'; i++) auto_seconds = auto_seconds * 10 + (ULONG)(args[i] - '0');
     SysBase = *(void **)4;
     void *me = (void *)CALL(SysBase, LVO_FindTask, REG(A1, 0));
     if (!PR_CLI(me)) {                                /* from Workbench: its message first */
@@ -295,8 +297,9 @@ LONG amiga_main(void)
         motors_off();
 
         take(pal);
+        ULONG until = auto_seconds * (pal ? 50 : 60);
         while (!(CIAA_PRA & 0x40) || !(CIAA_PRA & 0x80)) {}   /* (a button still held from the start) */
-        while ((CIAA_PRA & 0xC0) == 0xC0) {}
+        while ((CIAA_PRA & 0xC0) == 0xC0 && (!until || vb_count < until)) {}
         ULONG shown = frames_shown, counted = vb_count;
         give_back();
 

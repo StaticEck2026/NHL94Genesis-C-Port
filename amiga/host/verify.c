@@ -286,8 +286,8 @@ static const uint8_t *load_rom(const char *given)
 
 static void *open_lib(const char *name, ULONG v) { return (void *)CALL(SysBase, LVO_OpenLibrary, REG(A1, name), REG(D0, v)); }
 
-LONG amiga_main(void);
-LONG amiga_main(void)
+LONG amiga_main(const char *args, LONG arglen);
+LONG amiga_main(const char *args, LONG arglen)
 {
     SysBase = *(void **)4;
     DOSBase = open_lib("dos.library", 36);
@@ -301,6 +301,10 @@ LONG amiga_main(void)
     K->sys = SysBase;
     K->dos = DOSBase;
     K->only = -1;
+    for (int i = 0; i < NTESTS; i++) {                    /* NHL94VFY <name>: that script alone */
+        size_t n = strlen(tests[i].name);
+        if ((size_t)arglen > n && !memcmp(args, tests[i].name, n) && (args[n] == '\n' || args[n] == ' ' || args[n] == '\r')) K->only = i;
+    }
     logs("NHL94VFY " NHL94AGA_VERSION " " NHL94AGA_COMMIT " (P5: the game's logic on this Amiga, checked against the reference)\n");
     UWORD attn = EXEC_ATTNFLAGS(SysBase);
     logf_("Kickstart %u.%u, CPU %s, chip free %lu KB, other free %lu KB\n", EXEC_VERSION(SysBase), EXEC_SOFTVER(SysBase),
