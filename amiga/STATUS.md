@@ -138,7 +138,7 @@ One row per ADF hand-off. The log files are kept by the owner, out of git, and n
 | Date | ADF | Machine (model, Kickstart, RAM, expansions) | Display | Controllers | Units tested | Result | Log |
 |---|---|---|---|---|---|---|---|
 | 2026-11-20 | 0.1.0 handed off | | | | P1.2 | waiting | |
-| 2026-11-20 | 0.1.0 (822ac01) | Kickstart 40.063, 68020, Chip 1,848 KB free, no Fast RAM, PAL; chipset bits $13 (ECS Agnus and Denise, no Alice or Lisa). 40.063 is the A500/A600/A2000 build of 3.1, not the A1200's 40.068, so this is not an AGA A1200. Machine type (real or emulated) not stated yet | AmigaDOS console | — | P1.2, test sheet step 7 (refusal) | **Refusal path behaved as specified**: `REFUSED: needs the AGA chipset (Alice and Lisa)`, return code 20, free memory the same before and after (1,892,832 bytes), log written to PROGDIR:. Does **not** pass P1: that needs an AGA A1200 on KS 3.0 and 3.1. If this was an emulator, it is not evidence under PROMPT.md rule 2 | owner's screenshot IMG_0904 |
+| 2026-11-20 | 0.1.0 (822ac01) | Kickstart 40.063, 68020, Chip 1,848 KB free, no Fast RAM, PAL; chipset bits $13 (ECS Agnus and Denise, no Alice or Lisa). 40.063 is the A500/A600/A2000 build of 3.1, not the A1200's 40.068. The owner's log shows it was **iPadUAE (Amigo) on an iPad**: an emulator (68020, 2 MB Chip, 8 MB Z2 Fast RAM, UAE chipset mask 7) | AmigaDOS console | — | P1.2, test sheet step 7 (refusal) | **Refusal path behaved as specified**: `REFUSED: needs the AGA chipset (Alice and Lisa)`, return code 20, free memory the same before and after (1,892,832 bytes), log written to PROGDIR:. Does **not** pass P1: that needs an AGA A1200 on KS 3.0 and 3.1. An emulator run is not evidence under PROMPT.md rule 2: recorded for information only | owner's screenshot IMG_0904, iPadUAE log |
 | 2026-11-20 | 0.5.0 (private disks) handed off | | | | P5.2 | waiting | |
 
 ## ADF index
@@ -165,6 +165,9 @@ One row per ADF hand-off. The log files are kept by the owner, out of git, and n
 
 One line per correction the owner makes, or fact the owner supplies, with its date.
 
+* 2026-11-20 (correction): the owner's Kickstart files, read from their ROM headers, are 39.106 (`Kickstart_3.0.rom`,
+  CRC32 9E6AC152) and **40.063** (`Kickstart_3.1.rom` and its copy `Kickstart_4.0.rom`, CRC32 FC24AE0D). 40.063 is the
+  A500/A600/A2000 build of 3.1, not the A1200's 40.068. An earlier reply said otherwise; it was wrong.
 * 2026-11-20: the first hardware report ran 0.1.0 on Kickstart 40.063 with ChipRevBits0 $13. The AGA check reads
   bits 2 (Alice) and 3 (Lisa); bit 4 (`GFXB_AA_MLISA`, internal) alone is not AGA, and the refusal was right. A1200
   Kickstarts are 39.106 (3.0) and 40.068 (3.1); 40.063 belongs to the A500/A600/A2000.
