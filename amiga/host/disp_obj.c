@@ -259,30 +259,55 @@ static void a_changes(int tiles)
         }
 }
 
-/* plane A of one priority over the screen lines marked in `rows` that have some of it, in bands */
+/* what changed under plane A this pass: the screen lines (rows) and on each the pixels from row_x0 to
+ * row_x1 (screen coordinates); plane A is cut again only there */
+static int16_t row_x0[SH], row_x1[SH];
+static void mark_span(uint8_t *rows, int y, int x0, int x1)
+{
+    if (x0 < 0) x0 = 0;
+    if (x1 > WPX) x1 = WPX;
+    if (y < 0 || y >= SH || x1 <= x0) return;
+    if (!rows[y]) { rows[y] = 1; row_x0[y] = (int16_t)x0; row_x1[y] = (int16_t)x1; return; }
+    if (x0 < row_x0[y]) row_x0[y] = (int16_t)x0;
+    if (x1 > row_x1[y]) row_x1[y] = (int16_t)x1;
+}
+
+static void add_a(int b, int x, int y, int w, int h)      /* (a cut of plane A, for its restore later; the same one twice is kept once) */
+{
+    for (int i = 0; i < nadone[b]; i++)
+        if (adone[b][i].x == x && adone[b][i].y == y && adone[b][i].w == w && adone[b][i].h == h) return;
+    add(adone[b], &nadone[b], &full[b], x, y, w, h);
+}
+
+/* plane A of one priority over the screen lines marked in `rows` that have some of it, in bands of
+ * lines, and in each band only the runs of words that have some of it within what changed */
 static void op_a(uint8_t *buf, int b, const uint8_t *mask, const uint8_t (*fast)[SWMAX], const int16_t *count, const uint8_t *rows)
 {
     for (int y = 0; y < SH; y++) {
         if (!rows[y] || !count[y]) continue;
-        int y1 = y;
-        while (y1 < SH && rows[y1] && count[y1]) y1++;
-        int c0 = SW, c1 = -1;                             /* the band's columns with something in the mask */
-        for (int l = y; l < y1; l++) {                    /* (the Fast RAM copy of the mask: Chip RAM reads are slow) */
-            const uint8_t *f = fast[l];
-            int c = 0;
-            while (c < c0 && !f[c]) c++;
-            if (c < c0) c0 = c;
-            c = SW - 1;
-            while (c > c1 && !f[c]) c--;
-            if (c > c1) c1 = c;
+        int y1 = y, s0 = WPX, s1 = 0;
+        while (y1 < SH && rows[y1] && count[y1]) {
+            if (row_x0[y1] < s0) s0 = row_x0[y1];
+            if (row_x1[y1] > s1) s1 = row_x1[y1];
+            y1++;
         }
-        if (c1 < 0) { y = y1; continue; }
-        int w0 = c0 >> 1, w1 = c1 >> 1, x = obj.px0 + w0 * 16;
-        int words = w1 - w0 + 1 + ((x & 15) ? 1 : 0);
-        uint32_t bw = blit_words;
-        op_cookie_w(buf, a_img + (uint32_t)y * 6 * AW + 2u * (uint32_t)w0, mask + (uint32_t)y * 6 * AW + 2u * (uint32_t)w0, AW, words, x, obj.py0 + y, y1 - y);
-        obj.w_a += blit_words - bw;
-        add(adone[b], &nadone[b], &full[b], x & ~15, (obj.py0 + y) & 255, words * 16, y1 - y);
+        int w0 = s0 >> 4, w1 = (s1 - 1) >> 4;
+        uint8_t any[SWMAX / 2];                           /* (the Fast RAM copy of the mask, a word a column: Chip RAM reads are slow) */
+        memset(any, 0, sizeof any);
+        for (int l = y; l < y1; l++) {
+            const uint8_t *f = fast[l];
+            for (int w = w0; w <= w1; w++) any[w] |= f[2 * w] | f[2 * w + 1];
+        }
+        for (int w = w0; w <= w1; w++) {
+            if (!any[w]) continue;
+            int r0 = w;
+            while (w + 1 <= w1 && any[w + 1]) w++;
+            int x = obj.px0 + r0 * 16, words = w - r0 + 1 + ((x & 15) ? 1 : 0);
+            uint32_t bw = blit_words;
+            op_cookie_w(buf, a_img + (uint32_t)y * 6 * AW + 2u * (uint32_t)r0, mask + (uint32_t)y * 6 * AW + 2u * (uint32_t)r0, AW, words, x, obj.py0 + y, y1 - y);
+            obj.w_a += blit_words - bw;
+            add_a(b, x & ~15, (obj.py0 + y) & 255, words * 16, y1 - y);
+        }
         y = y1;
     }
 }
@@ -465,11 +490,12 @@ static void cpu_compose(uint8_t *buf, int b, int y)
 
 /* ---- the update -------------------------------------------------------------------------------- */
 
-static void mark_rows(uint8_t *rows, const struct rect *r)   /* the screen lines a buffer rectangle covers */
+static void mark_rect(uint8_t *rows, const struct rect *r)   /* the screen pixels a buffer rectangle covers */
 {
+    int x0 = (r->x & ~15) - obj.px0, x1 = ((r->x + r->w + 15) & ~15) - obj.px0;   /* (whole words of the buffer: the blits' extent) */
     for (int j = 0; j < r->h; j++) {
         int y = (r->y + j - obj.py0) & 255;
-        if (y < SH) rows[y] = 1;
+        if (y < SH) mark_span(rows, y, x0, x1);
     }
 }
 
@@ -515,16 +541,21 @@ void obj_update(void)
     int b = obj.shown ^ 1;
     uint8_t *buf = obj.buf[b];
     obj.px0 = (512 - disp_hscroll(0, 1)) & 511;
+    /* (the buffer's first 320 pixels are there again from 512: a 256-pixel picture at the left edge is
+     * shown from that copy, so that the sprites partly left of the screen are blitted, not drawn by the
+     * CPU after the blitter's queue has run out) */
+    if (obj.px0 < 32 && obj.px0 + 512 + WPX + 16 <= OBJ_RW * 8) obj.px0 += 512;
     obj.py0 = d->vs[1] & 255;
     /* plane A stays in this buffer when the scroll and plane A are what they were when it was drawn:
      * then it is drawn again only on the lines where something is restored or drawn */
     int stay = !full[b] && b_px0[b] == obj.px0 && b_py0[b] == obj.py0 && b_aver[b] == a_ver;
     static uint8_t rows[SH];
     memset(rows, !stay, sizeof rows);
+    if (!stay) for (int y = 0; y < SH; y++) { row_x0[y] = 0; row_x1[y] = (int16_t)WPX; }
     if (full[b]) { blit_wait(); memcpy(buf, obj.rink, OBJ_BYTES); }
     else {
-        for (int i = 0; i < ndone[b]; i++) { op_copy(buf, &done[b][i]); if (stay) mark_rows(rows, &done[b][i]); }
-        for (int i = 0; i < nchg[b]; i++) { op_copy(buf, &chg[b][i]); if (stay) mark_rows(rows, &chg[b][i]); }
+        for (int i = 0; i < ndone[b]; i++) { op_copy(buf, &done[b][i]); if (stay) mark_rect(rows, &done[b][i]); }
+        for (int i = 0; i < nchg[b]; i++) { op_copy(buf, &chg[b][i]); if (stay) mark_rect(rows, &chg[b][i]); }
         if (!stay) for (int i = 0; i < nadone[b]; i++) op_copy(buf, &adone[b][i]);
     }
     if (!stay) nadone[b] = 0;
@@ -539,7 +570,7 @@ void obj_update(void)
         }
     if (stay)
         for (int i = 0; i < nsp; i++)
-            for (int y = sp[i].y < 0 ? 0 : sp[i].y; y < sp[i].y + sp[i].h && y < SH; y++) rows[y] = 1;
+            for (int y = sp[i].y < 0 ? 0 : sp[i].y; y < sp[i].y + sp[i].h && y < SH; y++) mark_span(rows, y, sp[i].x, sp[i].x + sp[i].w);
     /* the painter's order: A low, sprites low, the rink's high pixels again, A high, sprites high */
     op_a(buf, b, a_lo_m, a_lo, a_row_lo, rows);
     for (int i = nsp - 1; i >= 0; i--) if (!sp[i].pri) op_sprite(buf, b, &sp[i], tiles);
@@ -550,12 +581,14 @@ void obj_update(void)
             int x0 = obj.px0 + (sp[i].x < 0 ? 0 : sp[i].x), any = 0;
             for (int cy = (obj.py0 + y0) >> 3; cy <= (obj.py0 + y1 - 1) >> 3 && !any; cy++)   /* (only where the rink has high pixels) */
                 for (int cx = x0 >> 3; cx <= (x0 + sp[i].w + 15) >> 3 && !any; cx++) any = rink_hi_cell[(cy & 31) * 64 + (cx & 63)];
-            if (any) op_recut(buf, x0, obj.py0 + y0, sp[i].w + 16, y1 - y0);
+            if (!any) continue;
+            op_recut(buf, x0, obj.py0 + y0, sp[i].w + 16, y1 - y0);
+            for (int y = y0; y < y1; y++) mark_span(rows, y, (x0 & ~15) - obj.px0, ((x0 + sp[i].w + 31) & ~15) - obj.px0);   /* (plane A high again where the recut went: its whole words) */
         }
     for (int y = 0; y < SH; y++) {                        /* (and over plane A low on the lines it was drawn) */
         if (!rows[y] || !a_row_lo[y]) continue;
         int y1 = y;
-        while (y1 < SH && rows[y1] && a_row_lo[y1]) y1++;
+        while (y1 < SH && rows[y1] && a_row_lo[y1]) { row_x0[y1] = 0; row_x1[y1] = (int16_t)WPX; y1++; }
         op_recut(buf, obj.px0, obj.py0 + y, WPX + 16, y1 - y);
         y = y1;
     }
