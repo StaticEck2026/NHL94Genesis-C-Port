@@ -1,13 +1,12 @@
 NHL94AGA - native Amiga 1200 AGA port of NHL '94 (see Credits.txt)
 
 Needs: Kickstart 3.0 or newer, a 68020 or better, the AGA chipset (Amiga 1200, 4000, CD32
-hardware). The port targets an A1200 with Fast RAM. A stock A1200 (2 MB Chip RAM, no Fast
-RAM) runs these checks too, more slowly. There is no picture or sound yet.
+hardware). The port targets an A1200 with Fast RAM, and your own 1 MB NHL '94 cartridge dump
+(NHL94ROM:nhl94.bin, RAM:nhl94.bin, beside the program, or on two floppies NHL94ROMA: and
+NHL94ROMB:). Nothing from the cartridge is on this disk.
 
-Boot this disk and it runs NHL94VFY, which plays the repository's input scripts through the
-game's logic and checks and times every pass. It needs your own dump of the 1 MB US/Europe
-cartridge (NHL94ROM:nhl94.bin, RAM:nhl94.bin, beside the program, or on two floppies).
-From a Shell: NHL94VFY <script>, NHL94VFY <script> INTENT (the display requests), and
-NHL94AGA (the boot and takeover test; it gives the machine back when you press the left
-mouse button or a fire button). Logs go to NHL94VFY.log and NHL94AGA.log on this disk (or
-RAM: when the disk is write-protected). Changelog.txt says what each version does.
+Boot this disk and it runs the game (NHL94VFY PLAY). Keyboard: cursor keys, Z = A, X = B,
+C/Space/Return = C, P = Start, Esc quits. Joystick in port 2: fire 1 = B, fire 2 = A. CD32
+pad: red B, blue C, yellow/green A, play Start. Records and playoffs are kept in NHL94.sav.
+From a Shell: NHL94VFY <script> [SHOW|INTENT|AUDIO] runs the checks; NHL94AGA is the boot test.
+Changelog.txt says what each version does.

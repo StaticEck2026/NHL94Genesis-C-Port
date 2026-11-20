@@ -28,6 +28,42 @@ Gates passed on a stock A1200 (machine, Kickstart): A-...
 Tested by, on: <date>, <log name>
 ```
 
+## 0.6.0 (2026-11-20), phases P6 to P10: the game on screen, with sound and controllers
+
+ADFs: `nhl94-aga-v0.6.0.adf` (public; it boots the game). For the owner of the ROM, made by
+`make -C amiga verify-disks` and never published: the verify, intent, show and audio check disks and
+`nhl94-rom-a.adf`, `nhl94-rom-b.adf`. Test sheet: amiga/tests/v0.6.0.md.
+
+Added:
+* The game itself: `NHL94VFY PLAY` (what the disk boots). The picture on the A1200's own display (one
+  six-plane low-resolution playfield, 64 colours of 24 bits, 256 or 320 pixels wide, 60 Hz), the
+  sound on Paula, and the Amiga's controllers.
+* The match picture: the rink scrolled by the hardware, the players, puck, overlays and clock drawn
+  by the blitter in the Genesis's priority order, two buffers shown in turn.
+* Sound: the game's FM instruments rendered on your Amiga from your cartridge into looped samples, the
+  crowd, organ and speech through the game's own volume table, the PSG as square waves and noise.
+* Controllers: a joystick in port 2 (fire 1 = B, fire 2 = A), a CD32 pad (red B, blue C, yellow and
+  green A, play Start), the keyboard (cursor keys, Z = A, X = B, C / Space / Return = C, P = Start,
+  Esc quits), a joystick in port 1 for player 2, and a parallel-port four-player adapter.
+* Records and playoffs are kept in `NHL94.sav` beside the program (written when you quit with Esc).
+* Checks: `NHL94VFY <script> SHOW` (the six bitplanes' hash per pass, gate A-DISPLAY-PLANES) and
+  `NHL94VFY <script> AUDIO` (the sound commands' hash per pass, gate A-AUDIO-CMD).
+
+Known issues:
+* A match does not run at full speed yet: a pass's drawing takes about 33 ms on average with 8 MB of
+  Fast RAM (emulated), so play runs at roughly half speed. Menus run at full speed.
+* The title stops for about 0.7 s about once a second while its credits move (I-8).
+* The sound is a first version: each instrument's timbre is fixed (the FM modulators' envelopes are
+  left out) and it is mono. It has not been listened to on a real A1200 yet.
+* Screen changes (a fade to black, then the new screen) take up to 4 seconds.
+* All of it is from a cycle-exact emulated A1200 (D-13). No real A1200 has run it yet.
+
+Gates passed (emulated A1200, Kickstart 39.106, 8 MB Fast RAM; provisional under D-13): A-LOGIC (7
+scripts), A-DISPLAY-INTENT (7 scripts), A-DISPLAY-PLANES (name_entry, attract, pause_menus), A-LEGAL on
+the public ADF (D-12). On the host: the drawn picture equals the reference on all 69,293 frames of the
+seven golden runs.
+Tested by, on: the agent, 2026-11-20, in PUAE. Real hardware: not yet.
+
 ## 0.5.1 (2026-11-20), phases P5 and P6: faster logic, and the display requests checked
 
 ADFs: `nhl94-aga-v0.5.1.adf` (public). For the owner of the ROM, made by `make -C amiga verify-disks`
