@@ -23,12 +23,15 @@ CFLAGS  := -mcpu=68020 -msoft-float -Os -fomit-frame-pointer -ffreestanding -fno
 LIBGCC  := $(shell $(CC) -mcpu=68020 -print-libgcc-file-name)
 OBJS    := $(B)/start.o $(B)/boot.o $(B)/libc.o
 # the game's C (src/, without the Z80 relay) and the verify program (P5)
+BESRC   := $(B)/src-be
 GFLAGS  := -mcpu=68020 -msoft-float -O2 -fomit-frame-pointer -fno-pic -fno-common -fno-asynchronous-unwind-tables \
            --param=min-pagesize=0 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -std=gnu11 -Wall -Wextra -Wshadow \
-           -Wstrict-prototypes -Wmissing-prototypes -Wno-unused-parameter -Werror -I../src -Ihost -I$(B)
+           -Wstrict-prototypes -Wmissing-prototypes -Wno-unused-parameter -Werror -I$(BESRC) -Ihost -I$(B)
 # src/ under the m68k ABI only: ram.c's little-endian table is unused on a big-endian machine, and
 # optsetup.c reads past an array's end as the 68000 does (src/mem.h); both stay warnings (STATUS.md)
 GAMEWARN := -Wno-unused-const-variable -Wno-error=array-bounds
+# the game is compiled from a copy of src/ with the big-endian RAM accessors (D-4, amiga/tools/mem_be.py);
+# src/ itself is unchanged
 GSRC    := $(filter-out ../src/z80.c,$(wildcard ../src/*.c))
 GOBJS   := $(GSRC:../src/%.c=$(B)/game/%.o)
 VOBJS   := $(B)/start.o $(B)/verify.o $(B)/hal_core.o $(B)/libc_amiga.o $(B)/libc.o $(GOBJS)
@@ -44,10 +47,13 @@ $(B)/version.h: FORCE
 FORCE:
 $(B)/%.o: host/%.c host/amiga.h $(B)/version.h
 	$(CC) $(CFLAGS) -c $< -o $@
-$(B)/game/%.o: ../src/%.c $(wildcard ../src/*.h)
+$(BESRC)/.stamp: $(wildcard ../src/*.c ../src/*.h) tools/mem_be.py
+	$(PY) tools/mem_be.py ../src $(BESRC)
+	@touch $@
+$(B)/game/%.o: ../src/%.c $(BESRC)/.stamp
 	@mkdir -p $(B)/game
-	$(CC) $(GFLAGS) $(GAMEWARN) -c $< -o $@
-$(B)/verify.o $(B)/hal_core.o $(B)/libc_amiga.o: $(B)/%.o: host/%.c host/hal_core.h host/hash.h host/libc_amiga.h host/amiga.h $(B)/version.h
+	$(CC) $(GFLAGS) $(GAMEWARN) -c $(BESRC)/$*.c -o $@
+$(B)/verify.o $(B)/hal_core.o $(B)/libc_amiga.o: $(B)/%.o: host/%.c host/hal_core.h host/hash.h host/libc_amiga.h host/amiga.h $(B)/version.h $(BESRC)/.stamp
 	$(CC) $(GFLAGS) -c $< -o $@
 $(B)/NHL94VFY.elf: $(VOBJS) host/amiga.ld
 	$(LD) -T host/amiga.ld --emit-relocs -nostdlib -o $@ $(VOBJS) $(LIBGCC) -Map $(B)/NHL94VFY.map

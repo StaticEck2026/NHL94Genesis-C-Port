@@ -70,6 +70,10 @@ Fast RAM, an accelerator or a 68030/040/060 may be *present*. The program then r
 except that it may put code and non-DMA data in Fast RAM (`MEMF_ANY` after `MEMF_CHIP` needs are met).
 Every gate is passed on the stock machine, and a run on an expanded machine never replaces a stock run.
 
+**Amended 2026-11-20 (D-14, owner):** the emulated feasibility run showed the game's logic alone takes 122% of a
+frame on the stock machine. The baseline is now **an A1200 with Fast RAM** (any trapdoor card). The stock
+2 MB machine stays a measured goal, and every timing run reports both.
+
 ## 3. What "100% parity" means here, and how it is proved
 
 Parity has four parts. Each part has a gate that a program checks. "It looks right" never passes a gate.
