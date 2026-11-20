@@ -1,0 +1,28 @@
+/* amiga/host/disp_obj.c: the scrolled scene (amiga/notes/p7_design.md). When the picture is 256 wide,
+ * plane B scrolls as one piece and plane A does not scroll (the match), plane B is drawn once into
+ * its own planar bitmap (the rink bitmap: the plane's 512 pixels and its first 256 again, 256 lines,
+ * six planes interleaved a line) and the picture is two display buffers made from it, shown in turn
+ * with the hardware's scroll, with plane A, the window and the sprites drawn into them each pass as
+ * objects in the VDP's priority order. Lines where the VDP's sprite limits cut in are composed by the
+ * CPU. Other pictures stay with disp_draw.c. */
+#pragma once
+#include <stdint.h>
+
+#define OBJ_RW 96                                         /* bytes a plane line of the rink bitmaps (768 pixels) */
+#define OBJ_RH 256
+#define OBJ_LS (OBJ_RW * 6)                               /* bytes a line: six planes interleaved */
+#define OBJ_BYTES (OBJ_LS * OBJ_RH)
+struct obj {
+    uint8_t *rink, *rink_hi, *buf[2];                     /* the platform's (Chip RAM on the Amiga); rink_hi: one plane, OBJ_RW a line */
+    int shown;                                            /* the buffer to show after obj_update */
+    int px0, py0;                                         /* where the screen's top left pixel lies in it */
+    uint32_t updates, restored, drawn, cpu_lines, rebuilds;
+};
+extern struct obj obj;
+
+void obj_reset(uint8_t *rink, uint8_t *rink_hi, uint8_t *buf0, uint8_t *buf1);
+int obj_scene(void);                                      /* the picture now is one this path draws */
+void obj_update(void);                                    /* at the game's wait, when obj_scene(): the next buffer */
+int obj_pixel(int x, int y);                              /* the shown buffer's colour number at screen pixel x, y */
+void obj_window(uint8_t *const planes[6]);                /* the shown window as six 40-byte-a-line planes (the planes' hash) */
+void obj_leave(void);                                     /* the picture went back to disp_draw.c: rebuild on the way in */

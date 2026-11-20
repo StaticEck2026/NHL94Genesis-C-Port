@@ -22,6 +22,7 @@
 #include "intent.h"
 #include "disp_core.h"
 #include "disp_draw.h"
+#include "disp_obj.h"
 #include "mdrt/vdp.h"                                     /* the host build's renderer: the picture reference only */
 
 #define FNV0 0xCBF29CE484222325ull
@@ -285,7 +286,7 @@ static void frame_stats(long frame)
             core.reg[11] & 7, pw, ph, n[0], pal[0], pri[0], n[1], pal[1], pri[1], wrows, wcols, sn, sarea, sbig, spal, spri,
             hsv[0], vsv[0], hsv[1], vsv[1], st_cell_bytes, st_tile_bytes, st_sat_bytes, st_hs_bytes, (unsigned)g.VBint);
 }
-static long frames_wanted, checked, bad_ram, bad_vdp, first_bad = -1, intent_passes, bad_pic, first_bad_pic, bad_disp, first_bad_disp, bad_draw, first_bad_draw;
+static long frames_wanted, checked, bad_ram, bad_vdp, first_bad = -1, intent_passes, bad_pic, first_bad_pic, bad_disp, first_bad_disp, bad_draw, first_bad_draw, n_obj;
 static jmp_buf done;
 void plat_frame_done(long frame)
 {
@@ -324,12 +325,19 @@ void plat_frame_done(long frame)
     for (int y = 0; y < 224; y++) { dline(y, pic); hd = fnv(hd, pic, (size_t)disp.width * 2); }
     /* and the six bitplanes the drawing side keeps up to date, turned back into colours (with the
      * display switched off the Amiga shows no bitplanes: the backdrop) */
-    draw_update();
+    static int was_obj;
+    int objmode = !getenv("HALCHECK_NO_OBJ") && obj_scene();
+    if (objmode) { obj_update(); was_obj = 1; n_obj++; }
+    else {
+        if (was_obj) { obj_leave(); draw_invalidate(); was_obj = 0; }
+        draw_update();
+    }
     uint64_t hw = FNV0;
     for (int y = 0; y < 224; y++) {
         for (int x = 0; x < disp.width; x++) {
             int c = 0;
-            for (int k = 0; k < 6; k++) c |= ((draw.plane[k][y * DRAW_STRIDE + (x >> 3)] >> (7 - (x & 7))) & 1) << k;
+            if (objmode) c = obj_pixel(x, y);
+            else for (int k = 0; k < 6; k++) c |= ((draw.plane[k][y * DRAW_STRIDE + (x >> 3)] >> (7 - (x & 7))) & 1) << k;
             pic[x] = (c && (disp.reg[1] & 0x40)) ? disp.pal[c] : disp.pal[disp.reg[7] & 0x3F];
         }
         hw = fnv(hw, pic, (size_t)disp.width * 2);
@@ -358,7 +366,10 @@ void plat_frame_done(long frame)
         }
     }
     if (planes_out) {                                     /* the Amiga's reference for its planes (NHL94VFY <script> SHOW) */
-        uint32_t h = planes_hash32(draw.plane);
+        static uint8_t win[6][DRAW_PLANE_BYTES];
+        uint8_t *const wp[6] = { win[0], win[1], win[2], win[3], win[4], win[5] };
+        if (objmode) obj_window(wp);
+        uint32_t h = planes_hash32(objmode ? wp : draw.plane);
         uint8_t be[4] = { (uint8_t)(h >> 24), (uint8_t)(h >> 16), (uint8_t)(h >> 8), (uint8_t)h };
         fwrite(be, 1, 4, planes_out);
     }
@@ -417,6 +428,8 @@ int main(int argc, char **argv_in)
     static uint8_t planes[6][DRAW_PLANE_BYTES];
     uint8_t *const pp[6] = { planes[0], planes[1], planes[2], planes[3], planes[4], planes[5] };
     draw_reset(pp);
+    static uint8_t rink[OBJ_BYTES], rink_hi[OBJ_RW * OBJ_RH], ob0[OBJ_BYTES], ob1[OBJ_BYTES];
+    obj_reset(rink, rink_hi, ob0, ob1);
     if (!setjmp(done)) run68k(Start);
     if (out) fclose(out);
     if (intent_out) fclose(intent_out);
@@ -430,6 +443,7 @@ int main(int argc, char **argv_in)
     if (bad_disp) printf(", first at frame %ld", first_bad_disp);
     printf("; the drawn bitplanes differ in %ld", bad_draw);
     if (bad_draw) printf(", first at frame %ld", first_bad_draw);
+    printf(" (%ld passes by the scrolled scene: %u rebuilds, %u lines by the CPU)", n_obj, obj.rebuilds, obj.cpu_lines);
     printf(" (%u screen cells drawn in %u updates, %u of them whole screens; line bytes %u planar, %u a pixel at a time)", draw.cells_drawn, draw.updates, draw.full_updates, draw.bytes_fast, draw.bytes_slow);
     if (getenv("HALCHECK_WHY")) for (int i = 0; i < 26; i++) if (disp.why[i]) printf(" why[%d]=%u", i, disp.why[i]);
     printf(" (DMAs %u, fills %u, VRAM copies %u, VRAM reads %u, sound commands %u, restarts %u, other $96 %u)\n",

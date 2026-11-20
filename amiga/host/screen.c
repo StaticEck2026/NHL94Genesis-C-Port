@@ -12,7 +12,7 @@ int screen_pal;
 static void *GfxBase, *IntuitionBase;
 static UBYTE *planes;
 static UWORD *cop[2];
-static int cop_next, profiling;
+static int cop_next, profiling, taken;
 static struct { void *view; ULONG vbr; void *l3; UWORD intena, dmacon, adkcon; } saved;
 #define COP_WORDS 512
 #define BPLCON2_KILLEHB 0x0200                  /* six planes are 64 colours, not extra half-brite */
@@ -82,8 +82,11 @@ int screen_open(int pal, int profile)
     cop[0] = (UWORD *)CALL(SysBase, LVO_AllocMem, REG(D0, 2 * COP_WORDS * 2 + 64), REG(D1, MEMF_CHIP | MEMF_CLEAR));
     if (!GfxBase || !planes || !cop[0]) { screen_close(); return 0; }
     cop[1] = cop[0] + COP_WORDS;
-    screen_dbg = (volatile ULONG *)(cop[0] + 2 * COP_WORDS);
-    screen_dbg[0] = 0x4E484C39; screen_dbg[1] = 0x34444247;   /* "NHL94DBG" */
+    if (!screen_dbg) {                                    /* (the program may give one that lives longer) */
+        screen_dbg = (volatile ULONG *)(cop[0] + 2 * COP_WORDS);
+        screen_dbg[0] = 0x4E484C39; screen_dbg[1] = 0x34444247;   /* "NHL94DBG" */
+    }
+    screen_dbg[6] = (ULONG)screen_open;                   /* (where the program was loaded: PCs to symbols) */
     show_dbg = (ULONG)screen_dbg;
     for (int k = 0; k < 6; k++) screen_plane[k] = planes + k * SCREEN_PLANE_BYTES;
     build(cop[0]);
@@ -94,7 +97,8 @@ int screen_open(int pal, int profile)
     CALL(GfxBase, LVO_OwnBlitter);
     CALL(GfxBase, LVO_WaitBlit);
     CALL(SysBase, LVO_Forbid);
-    saved.vbr = get_vbr();
+    saved.vbr = get_vbr();                              /* (0 on a 68020 with Kickstart's own vectors) */
+    taken = 1;
     saved.intena = CREG(INTENAR);
     saved.dmacon = CREG(DMACONR);
     saved.adkcon = CREG(ADKCONR);
@@ -147,12 +151,13 @@ ULONG screen_lines(void)
 
 void screen_close(void)
 {
-    if (saved.vbr) {
+    if (taken) {
         CREG(INTENA) = 0x7FFF;
         CREG(DMACON) = 0x7FFF;
         CREG(INTREQ) = 0x7FFF;
         CREG(INTREQ) = 0x7FFF;
         *(void *volatile *)(saved.vbr + 0x6C) = saved.l3;
+        CREG(BEAMCON0) = (GFX_DISPLAYFLAGS(GfxBase) & DISPLAY_PAL) ? 0x0020 : 0x0000;   /* (the OS's own beam again) */
         CREGL(COP1LC) = (ULONG)GFX_COPINIT(GfxBase);
         CREG(COPJMP1) = 0;
         CREG(ADKCON) = 0x7FFF;
@@ -165,11 +170,11 @@ void screen_close(void)
         CALL(GfxBase, LVO_DisownBlitter);
         CALL(SysBase, LVO_Permit);
         if (IntuitionBase) CALL(IntuitionBase, LVO_RethinkDisplay);
-        saved.vbr = 0;
+        taken = 0;
     }
     if (planes) CALL(SysBase, LVO_FreeMem, REG(A1, planes), REG(D0, 6 * SCREEN_PLANE_BYTES));
     show_dbg = 0;
-    screen_dbg = 0;
+    if (screen_dbg == (volatile ULONG *)(cop[0] + 2 * COP_WORDS)) screen_dbg = 0;
     if (cop[0]) CALL(SysBase, LVO_FreeMem, REG(A1, cop[0]), REG(D0, 2 * COP_WORDS * 2 + 64));
     if (IntuitionBase) CALL(SysBase, LVO_CloseLibrary, REG(A1, IntuitionBase));
     if (GfxBase) CALL(SysBase, LVO_CloseLibrary, REG(A1, GfxBase));

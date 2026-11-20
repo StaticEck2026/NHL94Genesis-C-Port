@@ -65,7 +65,8 @@ struct keep {
     int only;                                   /* -1: every test */
     int intent;                                 /* NHL94VFY <script> INTENT: check the display requests (A-DISPLAY-INTENT) */
     int show, pal;                              /* NHL94VFY <script> SHOW [PAL]: the picture on screen (P6.5), checked by its planes' hash */
-    long frames_max;                            /* NHL94VFY <script> ... FRAMES n: stop after n passes */
+    long frames_max;
+    volatile ULONG *dbg;                        /* the debug block in Chip RAM (screen.h), for the whole run */                            /* NHL94VFY <script> ... FRAMES n: stop after n passes */
     int profile, profiling;                     /* NHL94VFY <script> PROFILE [FIRST LAST]: asked for, and running */
     long prof_first, prof_last;                 /* the passes sampled (all of them when none are named) */
 };
@@ -291,6 +292,7 @@ static void run_one(void)
     K->profiling = profiling;
     if (K->show) {
         if (K->profile && !prof_alloc()) K->profile = 0;
+        screen_dbg = K->dbg;                              /* (power_on cleared the BSS) */
         if (!screen_open(K->pal, K->profile)) { logf_("%s: SHOW: not enough Chip RAM for the screen\n", t->name); R->aborted = 3; return; }
         disp_reset();
         draw_reset(screen_plane);
@@ -307,7 +309,9 @@ static void run_one(void)
     if (show_on) {
         show_on = 0;
         prof_on = 0;
+        if (K->dbg) K->dbg[5] = 10;
         screen_close();
+        if (K->dbg) K->dbg[5] = 11;
         machine_taken = 0;
         if (K->profile) {
             libc_format(path, sizeof path, "PROGDIR:%s.prof", t->name);
@@ -315,7 +319,9 @@ static void run_one(void)
         }
         if (times) {                                      /* NAME.drw: big-endian (logic lines, drawing lines) a pass */
             libc_format(path, sizeof path, "PROGDIR:%s.drw", t->name);
+            if (K->dbg) K->dbg[5] = 12;
             libc_save(path, times, (ULONG)R->frames * 4);
+            if (K->dbg) K->dbg[5] = 13;
             free(times);
             times = NULL;
         }
@@ -425,6 +431,8 @@ LONG amiga_main(const char *args, LONG arglen)
     K->sys = SysBase;
     K->dos = DOSBase;
     K->only = -1;
+    K->dbg = (volatile ULONG *)CALL(SysBase, LVO_AllocMem, REG(D0, 64), REG(D1, MEMF_CHIP | MEMF_CLEAR));   /* (a debug block for the whole run) */
+    if (K->dbg) { K->dbg[0] = 0x4E484C39; K->dbg[1] = 0x34444247; }
     for (int i = 0; i < NTESTS; i++) {                    /* NHL94VFY <name>: that script alone */
         size_t n = strlen(tests[i].name);
         if ((size_t)arglen > n && !memcmp(args, tests[i].name, n) && (args[n] == '\n' || args[n] == ' ' || args[n] == '\r')) K->only = i;
@@ -488,8 +496,11 @@ LONG amiga_main(const char *args, LONG arglen)
     }
     if (io) CALL(SysBase, LVO_DeleteIORequest, REG(A0, io));
     if (port) CALL(SysBase, LVO_DeleteMsgPort, REG(A0, port));
+    if (K->dbg) K->dbg[5] = 20;
     if (!libc_save("PROGDIR:NHL94VFY.log", K->log, K->loglen)) libc_save("RAM:NHL94VFY.log", K->log, K->loglen);
+    if (K->dbg) K->dbg[5] = 21;
     free(snap);
+    if (K->dbg) CALL(SysBase, LVO_FreeMem, REG(A1, K->dbg), REG(D0, 64));   /* (its words stay readable in a memory dump) */
     CALL(SysBase, LVO_FreeMem, REG(A1, K), REG(D0, sizeof *K));
     CALL(SysBase, LVO_CloseLibrary, REG(A1, DOSBase));
     return rc;

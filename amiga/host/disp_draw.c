@@ -347,6 +347,9 @@ static int used_tile_dirty(void)
     return 0;
 }
 
+void draw_invalidate(void) { first = 1; }
+int disp_compose_line(int line, uint8_t *out) { compose_line_slow(line, out); return 0; }
+
 void draw_update(void)
 {
     struct disp *d = &disp;
