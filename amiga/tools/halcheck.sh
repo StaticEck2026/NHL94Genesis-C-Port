@@ -10,8 +10,10 @@ ROM="${1:?usage: amiga/tools/halcheck.sh ROM}"
 mkdir -p build/amiga-tools out/amiga/ref
 SRC=$(ls src/*.c | grep -v '^src/z80.c$')
 # shellcheck disable=SC2086
-cc -std=gnu11 -O2 -g -Wall -Wextra -Wshadow -Wno-unused-parameter -Werror -Isrc -Iamiga/host \
-    -o build/amiga-tools/halcheck $SRC amiga/host/hal_core.c amiga/tools/halcheck.c
+# (ext/pulseman's VDP renderer is linked for the picture reference: a host tool only)
+cc -std=gnu11 -O2 -g -Wall -Wextra -Wshadow -Wno-unused-parameter -Werror -Isrc -Iamiga/host -Iext/pulseman/include \
+    -o build/amiga-tools/halcheck $SRC amiga/host/hal_core.c amiga/tools/halcheck.c \
+    ext/pulseman/src/vdp/render.c ext/pulseman/src/vdp/vdp.c
 S=tools/oracle/scripts
 fail=0
 check() {   # name frames [script]
