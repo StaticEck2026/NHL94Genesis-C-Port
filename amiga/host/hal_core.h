@@ -5,9 +5,11 @@
 
 struct core {
     /* the VDP's request state */
-    uint8_t reg[24], code, pending, fill, wmode;       /* wmode: code's low nibble, | $80 while a fill waits (1: a plain VRAM write) */
-    uint16_t addr, addr_hi, cram[64], vsram[40];
-    uint32_t hist_hi, hist_lo;                         /* the last four data words, the newest lowest: the VDP's FIFO */
+    uint8_t reg[24], code, pending, fill, wmode;       /* wmode 1: a data word is a plain VRAM write at an even address */
+    uint8_t hpos;                                      /* where the next data word goes in hist */
+    uint16_t addr, addr_hi, inc;                       /* inc: reg[15], the auto-increment, as a word */
+    uint16_t hist[256];                                /* the data words written, a ring: the VDP's FIFO is its last four */
+    uint16_t cram[64], vsram[40];
     int pal, vblank, in_vblank;
     uint32_t beam;
     /* I/O, pads */

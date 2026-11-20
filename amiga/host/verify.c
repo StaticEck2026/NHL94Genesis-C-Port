@@ -58,7 +58,8 @@ struct keep {
     ULONG loglen;
     ULONG eclock_hz;
     int only;                                   /* -1: every test */
-    int profile;                                /* NHL94VFY <script> PROFILE */
+    int profile, profiling;                     /* NHL94VFY <script> PROFILE [FIRST LAST]: asked for, and running */
+    long prof_first, prof_last;                 /* the passes sampled (all of them when none are named) */
 };
 static struct keep *K __attribute__((section(".keep")));
 
@@ -115,6 +116,7 @@ uint16_t plat_buttons(int pad, long h)
 
 void plat_frame_done(long frame)
 {
+    if (K->profiling) prof_sample(0);                     /* (this check is not the game's time) */
     long us = to_us(eclock() - t_start);
     if (frame == 1) R->first_us = us;                     /* (power on: the cartridge's checksum of 1 MB) */
     else {
@@ -133,6 +135,7 @@ void plat_frame_done(long frame)
     if (frame % 1200 == 0 && !K->profile) logf_("  %s: frame %ld, %ld differ\n", tests[test_index].name, frame, R->bad);
     if (!(CIAA_PRA & 0x40)) { R->aborted = 1; longjmp(stop, 1); }
     if (frame >= frames_wanted) longjmp(stop, 1);
+    if (K->profiling) prof_sample(frame + 1 >= K->prof_first && frame + 1 <= K->prof_last);
     t_start = eclock();
 }
 
@@ -223,10 +226,13 @@ static void run_one(void)
     core_power_on(0);
     CALL(DOSBase, -198, REG(D1, 150));                    /* Delay(3 s): the floppy motor stops before Forbid */
     int profiling = K->profile && prof_start();
-    if (!profiling) CALL(SysBase, LVO_Forbid);
+    K->profiling = profiling;
+    if (profiling) prof_sample(K->prof_first <= 1);
+    else CALL(SysBase, LVO_Forbid);
     t_start = eclock();
     if (!setjmp(stop)) run68k(Start);
     if (profiling) {
+        K->profiling = 0;
         prof_stop();
         libc_format(path, sizeof path, "PROGDIR:%s.prof", t->name);
         prof_save(path);
@@ -316,6 +322,9 @@ static void *open_lib(const char *name, ULONG v) { return (void *)CALL(SysBase, 
 LONG amiga_main(const char *args, LONG arglen);
 LONG amiga_main(const char *args, LONG arglen)
 {
+#ifdef AMIGA_GBASE
+    g_mid = (uint8_t *)&g_store + 0x8000;                 /* the work RAM's base register (amiga/tools/mem_be.py --gbase) */
+#endif
     SysBase = *(void **)4;
     DOSBase = open_lib("dos.library", 36);
     if (!DOSBase) return 20;
@@ -332,8 +341,21 @@ LONG amiga_main(const char *args, LONG arglen)
         size_t n = strlen(tests[i].name);
         if ((size_t)arglen > n && !memcmp(args, tests[i].name, n) && (args[n] == '\n' || args[n] == ' ' || args[n] == '\r')) K->only = i;
     }
-    for (LONG i = 0; i + 7 <= arglen; i++)
-        if (!memcmp(args + i, "PROFILE", 7)) K->profile = 1;
+    K->prof_first = 1;
+    K->prof_last = 0x7FFFFFFF;
+    for (LONG i = 0; i + 7 <= arglen; i++) {
+        if (memcmp(args + i, "PROFILE", 7)) continue;
+        K->profile = 1;
+        long v[2] = { 0, 0 };                             /* PROFILE FIRST LAST: those passes only */
+        int n = 0;
+        for (i += 7; i < arglen && n < 2; n++) {
+            while (i < arglen && args[i] == ' ') i++;
+            if (i >= arglen || args[i] < '0' || args[i] > '9') break;
+            while (i < arglen && args[i] >= '0' && args[i] <= '9') v[n] = v[n] * 10 + (args[i++] - '0');
+        }
+        if (n == 2) { K->prof_first = v[0]; K->prof_last = v[1]; }
+        break;
+    }
     logs("NHL94VFY " NHL94AGA_VERSION " " NHL94AGA_COMMIT " (P5: the game's logic on this Amiga, checked against the reference)\n");
     UWORD attn = EXEC_ATTNFLAGS(SysBase);
     logf_("Kickstart %u.%u, CPU %s, chip free %lu KB, other free %lu KB\n", EXEC_VERSION(SysBase), EXEC_SOFTVER(SysBase),

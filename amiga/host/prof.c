@@ -1,9 +1,11 @@
 /* The sampling profiler of the verify build (NHL94VFY <script> PROFILE): while a script plays, the
  * machine is taken the system-legal way (as amiga/host/boot.c does), the display is off, and a copper
- * list raises a copper interrupt on 8 lines of every frame (400 samples a second on PAL). The level 3
- * handler (prof_handler, start.S) counts the interrupted PC's 16-byte block of the program's code.
- * Given back afterwards; the counts go to NAME.prof for amiga/tools/profreport.py. While the machine
- * is taken the E clock does not run, so a profiling run reports no pass times. */
+ * list raises a copper interrupt on 30 lines of every frame (1,500 samples a second on PAL). The level 3
+ * handler (prof_handler, prof_asm.S) counts the interrupted PC's 16-byte block of the program's code.
+ * prof_sample turns the samples off and on: the verify program takes none during its own per-frame
+ * check, and only inside a window of frames when one is asked for. Given back afterwards; the counts
+ * go to NAME.prof for amiga/tools/profreport.py. While the machine is taken the E clock does not run,
+ * so a profiling run reports no pass times. */
 #include "amiga.h"
 #include "libc_amiga.h"
 #include "prof.h"
@@ -16,7 +18,7 @@ void prof_handler(void);
 static void *GfxBase, *IntuitionBase;
 static UWORD *copper;
 static struct { void *view; ULONG vbr; void *l3; UWORD intena, dmacon, adkcon; } saved;
-#define COPPER_BYTES 256
+#define COPPER_BYTES 512
 
 int prof_start(void)
 {
@@ -31,7 +33,7 @@ int prof_start(void)
     if (!prof_hist || !copper || !GfxBase) return 0;
     UWORD *c = copper;
     *c++ = BPLCON0; *c++ = 0x0200;                        /* (no bitplanes) */
-    for (UWORD line = 0x10; line <= 0xF0; line += 0x20) {
+    for (UWORD line = 0x10; line <= 0xF8; line += 8) {
         *c++ = (UWORD)(line << 8 | 0x07); *c++ = 0xFFFE;
         *c++ = INTREQ; *c++ = 0x8010;                     /* SETCLR | COPER */
     }
@@ -59,6 +61,12 @@ int prof_start(void)
     CREG(DMACON) = DMAF_SETCLR | DMAF_MASTER | DMAF_COPPER;
     CREG(INTENA) = INTF_SETCLR | INTF_INTEN | 0x0010;     /* COPER */
     return 1;
+}
+
+void prof_sample(int on)
+{
+    if (on) { CREG(INTREQ) = 0x0010; CREG(INTENA) = INTF_SETCLR | 0x0010; }   /* (a request left from before is dropped) */
+    else CREG(INTENA) = 0x0010;
 }
 
 void prof_stop(void)

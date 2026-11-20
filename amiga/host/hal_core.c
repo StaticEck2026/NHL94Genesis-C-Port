@@ -47,15 +47,16 @@ void core_power_on(int pal)
 
 int core_vdp_width(void) { return (core.reg[12] & 0x81) ? 320 : 256; }
 
-/* the write mode after code or fill changed, and a data word into the FIFO's history (the entry a read
- * takes its undriven bits from is the oldest of the last four: hist_hi >> 16) */
-static inline void wmode_sync(void) { core.wmode = (uint8_t)((core.code & 0x0F) | (core.fill ? 0x80 : 0)); }
-static inline void hist_word(uint16_t w)
+/* wmode after anything it depends on changed: 1 while a data word is a plain VRAM write the fast paths
+ * can take (the code says VRAM write, no fill waits, no command is half-written, and the address and
+ * the auto-increment are both even, so the address stays even). A data word goes into the FIFO's
+ * history, a ring of 256 (the entry a read takes its undriven bits from is the oldest of the last four) */
+static inline void wmode_sync(void)
 {
-    core.hist_hi = core.hist_hi << 16 | core.hist_lo >> 16;
-    core.hist_lo = core.hist_lo << 16 | w;
+    core.wmode = ((core.code & 0x0F) == 0x01 && !core.fill && !core.pending && !((core.addr | core.reg[15]) & 1)) ? 1 : 0;
 }
-#define FIFO_NEXT ((uint16_t)(core.hist_hi >> 16))
+static inline void hist_word(uint16_t w) { core.hist[core.hpos++] = w; }
+#define FIFO_NEXT (core.hist[(uint8_t)(core.hpos - 4)])
 
 static void bus_write(uint16_t w)
 {
@@ -180,6 +181,7 @@ static void ctrl16(uint16_t w)
         if ((w & 0xC000) == 0x8000) {
             int r = (w >> 8) & 0x1F;
             if (r < 24) { core.reg[r] = (uint8_t)w; plat_reg(r, (uint8_t)w); }
+            core.inc = core.reg[15];
         } else {
             core.pending = (core.reg[1] & 4) ? 1 : 0;
         }
@@ -207,8 +209,8 @@ static void data16(uint16_t w)
     if (core.fill) {
         core.fill = 0;
         dma_fill(w);
-        wmode_sync();
     }
+    wmode_sync();
 }
 
 void vdp_ctrl16(uint16_t v) { ctrl16(v); }
@@ -238,15 +240,15 @@ void vdp_ctrl(uint32_t v)
 }
 
 /* a data word: straight to the display backend when it is a plain VRAM write at an even address
- * (name-table cells, tile words, the clears), otherwise the general path */
+ * (name-table cells, tile words, the clears: wmode 1), otherwise the general path */
 void vdp_data(uint16_t v)
 {
     struct core *c = &core;
-    if (c->wmode == 1 && !(c->addr & 1)) {
-        c->pending = 0;
-        hist_word(v);
-        plat_vram_word(c->addr, v);
-        c->addr = (uint16_t)(c->addr + c->reg[15]);
+    if (c->wmode == 1) {
+        uint16_t a = c->addr;
+        c->hist[c->hpos++] = v;
+        c->addr = (uint16_t)(a + c->inc);
+        plat_vram_word(a, v);
         return;
     }
     data16(v);
@@ -255,18 +257,16 @@ void vdp_data(uint16_t v)
 void vdp_data32(uint32_t v)
 {
     struct core *c = &core;
-    if (c->wmode == 1 && !((c->addr | c->reg[15]) & 1)) {
-        c->pending = 0;
-        c->hist_hi = c->hist_lo;                          /* (two words into the history at once) */
-        c->hist_lo = v;
-        if (c->reg[15] == 2) {
-            plat_vram_long(c->addr, v);
-            c->addr = (uint16_t)(c->addr + 4);
+    if (c->wmode == 1) {
+        uint16_t a = c->addr;
+        c->hist[c->hpos++] = (uint16_t)(v >> 16);
+        c->hist[c->hpos++] = (uint16_t)v;
+        c->addr = (uint16_t)(a + 2 * c->inc);
+        if (c->inc == 2) {
+            plat_vram_long(a, v);
         } else {
-            plat_vram_word(c->addr, (uint16_t)(v >> 16));
-            c->addr = (uint16_t)(c->addr + c->reg[15]);
-            plat_vram_word(c->addr, (uint16_t)v);
-            c->addr = (uint16_t)(c->addr + c->reg[15]);
+            plat_vram_word(a, (uint16_t)(v >> 16));
+            plat_vram_word((uint16_t)(a + c->inc), (uint16_t)v);
         }
         return;
     }
@@ -296,12 +296,14 @@ uint16_t vdp_read(void)
         break;
     }
     core.addr = (uint16_t)(core.addr + core.reg[15]);
+    wmode_sync();
     return w;
 }
 
 uint16_t vdp_status(void)
 {
     core.pending = 0;
+    wmode_sync();
     uint16_t s = (uint16_t)(0x3400 | 0x0200 | core.pal);
     if (core.vblank || !(core.reg[1] & 0x40)) s |= 0x0008;
     return s;
