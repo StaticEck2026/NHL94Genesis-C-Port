@@ -97,6 +97,9 @@ static long to_us(ULONG ticks) { return (long)((unsigned long long)ticks * 10000
 static struct { long frame; uint16_t b; } *script;
 static long script_len, frames_wanted, test_index;
 static const uint32_t *ref;
+static uint32_t *over;                           /* the passes longer than a frame: (frame, microseconds) pairs, for NAME.over */
+static long nover;
+#define OVER_MAX 4096
 static uint32_t *made;                           /* (no reference on the disk: the hashes, written for the host to compare) */
 static ULONG ref_len, t_start;
 static jmp_buf stop;
@@ -104,10 +107,10 @@ static struct result *R;
 
 uint16_t plat_buttons(int pad, long h)
 {
+    static long at;                                       /* (the script's entry in force: frames only go up) */
     if (pad) return 0;
-    uint16_t b = 0;
-    for (long i = 0; i < script_len && script[i].frame <= h; i++) b = script[i].b;
-    return b;
+    while (at + 1 < script_len && script[at + 1].frame <= h) at++;
+    return script_len && script[at].frame <= h ? script[at].b : 0;
 }
 
 void plat_frame_done(long frame)
@@ -118,7 +121,10 @@ void plat_frame_done(long frame)
         R->sum_us += (unsigned long long)us;
         if (us > R->max_us) { R->max_us = us; R->max_frame = frame; }
         if (us * 10 > (long)FRAME_US * 9) R->over90++;
-        if (us > (long)FRAME_US) R->over100++;
+        if (us > (long)FRAME_US) {
+            R->over100++;
+            if (over && nover < OVER_MAX) { over[2 * nover] = (uint32_t)frame; over[2 * nover + 1] = (uint32_t)us; nover++; }
+        }
     }
     uint32_t h = ram_hash32((const uint8_t *)&g);
     if ((ULONG)frame <= ref_len && h != ref[frame - 1]) { if (!R->bad) R->first_bad = frame; R->bad++; }
@@ -133,6 +139,8 @@ void plat_frame_done(long frame)
 void plat_vram_byte(uint16_t a, uint8_t b) { (void)a; (void)b; }
 uint8_t plat_vram_read(uint16_t a) { (void)a; return 0; }
 void plat_vram_block(uint16_t a, const uint8_t *src, uint32_t words) { (void)a; (void)src; (void)words; }
+void plat_vram_word(uint16_t a, uint16_t w) { (void)a; (void)w; }
+void plat_vram_fill(uint16_t a, uint8_t b, uint32_t n, uint8_t step) { (void)a; (void)b; (void)n; (void)step; }
 void plat_cram(int i, uint16_t c) { (void)i; (void)c; }
 void plat_reg(int r, uint8_t v) { (void)r; (void)v; }
 void plat_sound_command(const uint8_t *z) { (void)z; }
@@ -203,6 +211,8 @@ static void run_one(void)
     ref_len = ref ? n / 4 : 0;
     made = ref ? NULL : malloc((size_t)t->frames * 4);
     if (!ref) logf_("%s: no reference on this disk: its hashes go to PROGDIR:%s.h32 for amiga/tools/h32compare.py\n", t->name, t->name);
+    over = K->profile ? NULL : malloc(OVER_MAX * 8);
+    nover = 0;
     frames_wanted = t->frames;
     memcpy(rules, rule_classic, sizeof rules);            /* the vanilla game (native/vanilla/stubs.c) */
     rom_cart = K->rom;
@@ -225,6 +235,11 @@ static void run_one(void)
     }
     R->dmas = core.dmas;
     R->commands = core.commands;
+    if (over) {
+        libc_format(path, sizeof path, "PROGDIR:%s.over", t->name);
+        libc_save(path, over, (ULONG)nover * 8);
+        free(over);
+    }
     if (made) {
         libc_format(path, sizeof path, "PROGDIR:%s.h32", t->name);
         if (!libc_save(path, made, (ULONG)R->frames * 4)) logf_("%s: cannot write %s\n", t->name, path);

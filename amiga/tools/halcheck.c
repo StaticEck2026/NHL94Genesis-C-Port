@@ -32,6 +32,8 @@ static uint8_t vram[0x10000];
 void plat_vram_byte(uint16_t a, uint8_t b) { vram[a] = b; }
 uint8_t plat_vram_read(uint16_t a) { return vram[a]; }
 void plat_vram_block(uint16_t a, const uint8_t *src, uint32_t words) { memcpy(vram + a, src, 2 * (size_t)words); }
+void plat_vram_word(uint16_t a, uint16_t w) { vram[a] = (uint8_t)(w >> 8); vram[(uint16_t)(a + 1)] = (uint8_t)w; }
+void plat_vram_fill(uint16_t a, uint8_t b, uint32_t n, uint8_t step) { while (n--) { vram[a ^ 1] = b; a = (uint16_t)(a + step); } }
 void plat_cram(int i, uint16_t c) { (void)i; (void)c; }
 void plat_reg(int r, uint8_t v) { (void)r; (void)v; }
 void plat_sound_command(const uint8_t *z) { (void)z; }
