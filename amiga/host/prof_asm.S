@@ -38,6 +38,8 @@ show_handler:
 	move.l	%d1,%a0
 	move.l	14(%sp),12(%a0)
 	addq.l	#1,16(%a0)
+	move.w	0xdff01e,28(%a0)		/* INTREQR, INTENAR at the entry (the debug block's words 14, 15) */
+	move.w	0xdff01c,30(%a0)
 .Lnodbg:
 	lea	0xdff000,%a0
 	move.w	0x1e(%a0),%d0

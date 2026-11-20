@@ -178,12 +178,41 @@ static void sprite_word(uint16_t a, uint16_t w)
     tile_word(a, w);
 }
 
+/* a word in a block with cell tables only (no sprite or scroll table): the tile cache, and the cell
+ * of each table that holds it */
+static void cell_word(uint16_t a, uint16_t w)
+{
+    struct disp *d = &disp;
+    uint32_t *row = &d->tile[a >> 5][(a >> 2) & 7];
+    int x = (a & 2) * 2;
+    uint32_t now = (*row & ~(0xF0F0F0F0u >> x)) | ((c2p[w >> 8] | c2p[w & 0xFF] >> 2) >> x);
+    if (now == *row) return;
+    *row = now;
+    d->tile_dirty[a >> 8] |= (uint8_t)(1 << ((a >> 5) & 7));
+    d->any_tile_dirty = 1;
+    int table = 0;
+    for (int k = 0; k < 3; k++) {
+        uint32_t o = (uint16_t)(a - d->base[k]);
+        if (o >= d->size[k]) continue;
+        uint16_t *c = &d->cell[k][o >> 1];
+        d->uses[*c & 0x7FF]--;
+        *c = w;
+        d->uses[w & 0x7FF]++;
+        d->cell_dirty[k][o >> 4] |= (uint8_t)(1 << ((o >> 1) & 7));
+        d->any_cell_dirty = 1;
+        d->plane_dirty[k] = 1;
+        table = 1;
+    }
+    if (table) d->cells_written += 2; else d->tile_bytes_written += 2;
+}
+
 void disp_vram_word(uint16_t a, uint16_t w)
 {
     if (!(a & 1)) {
         uint8_t k = disp.special[a >> 6];
         if (!k) { tile_word(a, w); return; }
         if (k == 2) { sprite_word(a, w); return; }
+        if (k == 1) { cell_word(a, w); return; }
     }
     put(a, (uint8_t)(w >> 8));
     put((uint16_t)(a + 1), (uint8_t)w);
@@ -196,6 +225,7 @@ void disp_vram_block(uint16_t a, const uint8_t *src, uint32_t words)
         uint8_t k = disp.special[a >> 6];
         if (!k) tile_word(a, (uint16_t)(src[0] << 8 | src[1]));
         else if (k == 2) sprite_word(a, (uint16_t)(src[0] << 8 | src[1]));
+        else if (k == 1) cell_word(a, (uint16_t)(src[0] << 8 | src[1]));
         else { put(a, src[0]); put((uint16_t)(a + 1), src[1]); }
     }
 }

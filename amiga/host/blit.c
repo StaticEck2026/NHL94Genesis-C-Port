@@ -71,7 +71,11 @@ void blit_run(const struct blit *bl)
         CREG(INTENA) = 0x0040;
         if (!running) { running = 1; start(bl); CREG(INTENA) = 0x8040; return; }
         if ((qt + 1) % QN != qh) { q[qt] = *bl; qt = (qt + 1) % QN; CREG(INTENA) = 0x8040; return; }
-        CREG(INTENA) = 0x8040;                            /* (full: let the blitter take some) */
+        /* full: the interrupt on until the blitter has taken one. (Turning it straight off again can let
+         * the CPU take an interrupt the handler then finds disabled, each time round: nothing moves) */
+        int h = qh;
+        CREG(INTENA) = 0x8040;
+        while (qh == h && running) { }
     }
 }
 
