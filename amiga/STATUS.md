@@ -151,7 +151,7 @@ One row per ADF hand-off. The log files are kept by the owner, out of git, and n
 | Version | Date | Commit | SHA-256 | State | Changelog |
 |---|---|---|---|---|---|
 | 0.5.0 (private) | 2026-11-20 | a32f0f1 | verify disk `5b1ceddcd835d307226ceb22a4413dc02f37c85b0785d5816b613434b1ad7af1`, ROM A `4cf17a03...511c2e`, ROM B `9d119eaf...c39f6` (made from the owner's ROM; never published) | ON-HARDWARE | [0.5.0](CHANGELOG.md) |
-| 0.5.0 (public) | 2026-11-20 | e709f65 | `1c402ddfb7ae0434378e691f42deda9883b6ccf0c32e7ba69cf35db2bbac16fa`; A-LEGAL passes under D-12 (626 windows, all inside NHL94VFY). Release approved by the owner (D-8, 2026-11-20): tag `amiga-v0.5.0`, notes `amiga/releases/v0.5.0.md`; the owner attaches the ADF in GitHub's release page (no release tool here) | RELEASED (preview) | [0.5.0](CHANGELOG.md) |
+| 0.5.0 (public) | 2026-11-20 | e709f65 | `1c402ddfb7ae0434378e691f42deda9883b6ccf0c32e7ba69cf35db2bbac16fa`; A-LEGAL passes under D-12 (626 windows, all inside NHL94VFY). Release approved by the owner (D-8, 2026-11-20): notes `amiga/releases/v0.5.0.md`. This session cannot push tags or create releases (its git access takes branch pushes only, and no release tool is available), so the owner creates tag `amiga-v0.5.0` on commit e709f65 and attaches the ADF in GitHub's release page | READY TO RELEASE (owner's step) | [0.5.0](CHANGELOG.md) |
 | 0.1.0 | 2026-11-20 | 822ac01 | `1e7876438b2c9831c5b2d18544ae73b59c8064b3e3bd00e0a219cc3c045717b1` (program `NHL94AGA`: `ceda6ecc9018a78d66fa36700f71205cf3c1f8eb161c82ddb6cfb65f6f404f81`) | ON-HARDWARE | [0.1.0](CHANGELOG.md) |
 
 ## Issues
