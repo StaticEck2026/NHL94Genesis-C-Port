@@ -28,6 +28,7 @@ static int16_t a_row_lo[SH], a_row_hi[SH];               /* bytes of each line w
 static uint8_t *spr_img, *spr_mask;                       /* the sprite images, NSPR of them by link number */
 static struct { uint16_t e; uint8_t size, valid; } spr_key[NSPR];
 static uint8_t rev[256];
+static uint8_t rink_hi_cell[64 * 32];                     /* a rink cell has high-priority pixels */
 
 void obj_reset(uint8_t *chip)
 {
@@ -86,12 +87,15 @@ static inline void cell_row(unsigned e, int r, uint8_t *p6, uint8_t *mask)
 
 static void rink_cell(int i)
 {
+    obj.rink_cells++;
     int cx = i & 63, cy = i >> 6;
     unsigned e = disp.cell[1][i];
+    rink_hi_cell[i] = 0;
     for (int r = 0; r < 8; r++) {
         uint8_t p6[6], m;
         cell_row(e, r, p6, &m);
         uint8_t hi = (e & 0x8000) ? m : 0;
+        rink_hi_cell[i] |= hi != 0;
         int y = cy * 8 + r;
         for (int copy = 0; copy < 2; copy++) {
             int bx = cx + copy * 64;
@@ -142,29 +146,35 @@ static void blit_rect(uint8_t *dst, const uint8_t *src_a, const uint8_t *src_b, 
 }
 static void op_copy(uint8_t *buf, const struct rect *r)  /* the rink bitmap into a buffer */
 {
+    uint32_t w0 = blit_words;
     blit_rect(buf, obj.rink, 0, r->x, r->y, r->w, r->h, BC0_USEA | BC0_USED | MINTERM_COPY_A);
+    obj.w_restore += blit_words - w0;
 }
 static void op_recut(uint8_t *buf, int x, int y, int w, int h)   /* the rink's high-priority pixels again over a rectangle */
 {
+    uint32_t w0 = blit_words;
     blit_rect(buf, obj.rink_hi, obj.rink, x, y, w, h, BC0_USEA | BC0_USEB | BC0_USEC | BC0_USED | MINTERM_COOKIE);
+    obj.w_recut += blit_words - w0;
 }
 
-/* an image (six interleaved planes and its mask, `bpr` bytes a plane row, the last word spare) cut
- * into a buffer with its left edge at pixel x of buffer line y, rows lines of it */
-static void op_cookie(uint8_t *buf, const uint8_t *img, const uint8_t *mask, int bpr, int x, int y, int rows)
+/* an image (six interleaved planes and its mask, `bpr` bytes a plane row) cut into a buffer with its
+ * left edge at pixel x of buffer line y, `words` words of each row (the last one taken only for the
+ * shift: its own pixels masked off when it is one more than the image needs), rows lines of it */
+static void op_cookie_w(uint8_t *buf, const uint8_t *img, const uint8_t *mask, int bpr, int words, int x, int y, int rows)
 {
-    int s = x & 15, words = bpr / 2;
+    int s = x & 15;
     y &= 255;
     while (rows > 0) {
         int n = rows < 256 - y ? rows : 256 - y;
         uint8_t *d = buf + (uint32_t)y * OBJ_LS + 2u * (uint32_t)(x >> 4);
         struct blit bl = { 0 };
         bl.a = mask; bl.b = img; bl.c = d; bl.d = d;
-        bl.amod = bl.bmod = 0;
+        bl.amod = bl.bmod = (int16_t)(bpr - 2 * words);
         bl.cmod = bl.dmod = (int16_t)(OBJ_RW - 2 * words);
         bl.con0 = (uint16_t)(s << 12 | BC0_USEA | BC0_USEB | BC0_USEC | BC0_USED | MINTERM_COOKIE);
         bl.con1 = (uint16_t)(s << 12);
-        bl.fwm = bl.lwm = 0xFFFF;
+        bl.fwm = 0xFFFF;
+        bl.lwm = s ? 0 : 0xFFFF;                          /* (the extra word: only what shifts in from the one before) */
         bl.w = (uint16_t)words;
         bl.h = (uint16_t)(n * 6);
         blit_run(&bl);
@@ -209,6 +219,7 @@ static int in_window(int cx, int cy)                     /* a screen cell is the
 /* one screen cell of plane A or the window into the A images, and the rows' counts */
 static void a_cell(int cx, int cy, int win)
 {
+    obj.a_cells++;
     unsigned e = win ? disp.cell[2][cy * disp.win_w + cx] : disp.cell[0][cy * 64 + cx];
     for (int r = 0; r < 8; r++) {
         int y = cy * 8 + r;
@@ -253,9 +264,17 @@ static void op_a(uint8_t *buf, int b, const uint8_t *mask, const int16_t *count,
         if (!rows[y] || !count[y]) continue;
         int y1 = y;
         while (y1 < SH && rows[y1] && count[y1]) y1++;
-        int x = obj.px0;
-        op_cookie(buf, a_img + (uint32_t)y * 6 * AW, mask + (uint32_t)y * 6 * AW, AW, x, obj.py0 + y, y1 - y);
-        add(adone[b], &nadone[b], &full[b], x & ~15, (obj.py0 + y) & 255, 288, y1 - y);
+        int c0 = SW, c1 = -1;                             /* the band's columns with something in the mask */
+        for (int l = y; l < y1; l++)
+            for (int c = 0; c < SW; c++)
+                if (mask[(uint32_t)(l * 6) * AW + (uint32_t)c]) { if (c < c0) c0 = c; if (c > c1) c1 = c; }
+        if (c1 < 0) { y = y1; continue; }
+        int w0 = c0 >> 1, w1 = c1 >> 1, x = obj.px0 + w0 * 16;
+        int words = w1 - w0 + 1 + ((x & 15) ? 1 : 0);
+        uint32_t bw = blit_words;
+        op_cookie_w(buf, a_img + (uint32_t)y * 6 * AW + 2u * (uint32_t)w0, mask + (uint32_t)y * 6 * AW + 2u * (uint32_t)w0, AW, words, x, obj.py0 + y, y1 - y);
+        obj.w_a += blit_words - bw;
+        add(adone[b], &nadone[b], &full[b], x & ~15, (obj.py0 + y) & 255, words * 16, y1 - y);
         y = y1;
     }
 }
@@ -314,6 +333,7 @@ static void spr_build(const struct spr *s)
 {
     int sw = s->w / 8, sh = s->h / 8;
     uint8_t *img = spr_img + s->link * SPR_BYTES, *mask = spr_mask + s->link * SPR_BYTES;
+    obj.sprite_builds++;
     for (int ty = 0; ty < s->h; ty++) {
         int row = (s->e & 0x1000) ? s->h - 1 - ty : ty;
         uint8_t p6[6][SPW], m6[SPW];
@@ -400,8 +420,11 @@ static void op_sprite(uint8_t *buf, int b, const struct spr *s, int tiles)
     }
     const uint8_t *img = spr_img + s->link * SPR_BYTES + (uint32_t)(y0 - s->y) * 6 * SPW;
     const uint8_t *mask = spr_mask + s->link * SPR_BYTES + (uint32_t)(y0 - s->y) * 6 * SPW;
-    op_cookie(buf, img, mask, SPW, x, obj.py0 + y0, y1 - y0);
-    add(done[b], &ndone[b], &full[b], x & ~15, (obj.py0 + y0) & 255, SPW * 8, y1 - y0);
+    int words = (s->w + 15) / 16 + ((x & 15) ? 1 : 0);   /* (the sprite's words, and one for the shift) */
+    uint32_t bw = blit_words;
+    op_cookie_w(buf, img, mask, SPW, words, x, obj.py0 + y0, y1 - y0);
+    obj.w_sprite += blit_words - bw;
+    add(done[b], &ndone[b], &full[b], x & ~15, (obj.py0 + y0) & 255, words * 16, y1 - y0);
 }
 
 /* ---- the CPU's lines: composed eight pixels at a time, shifted into the buffer -------------------- */
@@ -506,7 +529,11 @@ void obj_update(void)
     for (int i = 0; i < nsp; i++)
         if (!sp[i].pri) {
             int y0 = sp[i].y < 0 ? 0 : sp[i].y, y1 = sp[i].y + sp[i].h > SH ? SH : sp[i].y + sp[i].h;
-            if (y1 > y0) op_recut(buf, obj.px0 + (sp[i].x < 0 ? 0 : sp[i].x), obj.py0 + y0, sp[i].w + 16, y1 - y0);
+            if (y1 <= y0) continue;
+            int x0 = obj.px0 + (sp[i].x < 0 ? 0 : sp[i].x), any = 0;
+            for (int cy = (obj.py0 + y0) >> 3; cy <= (obj.py0 + y1 - 1) >> 3 && !any; cy++)   /* (only where the rink has high pixels) */
+                for (int cx = x0 >> 3; cx <= (x0 + sp[i].w + 15) >> 3 && !any; cx++) any = rink_hi_cell[(cy & 31) * 64 + (cx & 63)];
+            if (any) op_recut(buf, x0, obj.py0 + y0, sp[i].w + 16, y1 - y0);
         }
     for (int y = 0; y < SH; y++) {                        /* (and over plane A low on the lines it was drawn) */
         if (!rows[y] || !a_row_lo[y]) continue;

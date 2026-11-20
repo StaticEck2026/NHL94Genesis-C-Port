@@ -18,6 +18,8 @@ struct obj {
     int shown;                                            /* the buffer to show after obj_update */
     int px0, py0;                                         /* where the screen's top left pixel lies in it */
     uint32_t updates, restored, drawn, cpu_lines, rebuilds;
+    uint32_t rink_cells, sprite_builds, sprites_drawn, a_cells;   /* counts, for the cost */
+    uint32_t w_restore, w_recut, w_a, w_sprite;           /* words blitted, by kind */
 };
 extern struct obj obj;
 

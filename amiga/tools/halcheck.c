@@ -24,6 +24,7 @@
 #include "disp_core.h"
 #include "disp_draw.h"
 #include "disp_obj.h"
+#include "blit.h"
 #include "mdrt/vdp.h"                                     /* the host build's renderer: the picture reference only */
 
 #define FNV0 0xCBF29CE484222325ull
@@ -474,7 +475,11 @@ int main(int argc, char **argv_in)
     if (bad_disp) printf(", first at frame %ld", first_bad_disp);
     printf("; the drawn bitplanes differ in %ld", bad_draw);
     if (bad_draw) printf(", first at frame %ld", first_bad_draw);
-    printf(" (%ld passes by the scrolled scene: %u rebuilds, %u lines by the CPU)", n_obj, obj.rebuilds, obj.cpu_lines);
+    printf(" (%ld passes by the scrolled scene: %u rebuilds, %u lines by the CPU", n_obj, obj.rebuilds, obj.cpu_lines);
+    if (n_obj) printf("; a pass: %.0f blits, %.0f words blitted, %.1f rink cells, %.1f sprite images built, %.1f plane A cells", (double)blit_count / n_obj, (double)blit_words / n_obj,
+                      (double)obj.rink_cells / n_obj, (double)obj.sprite_builds / n_obj, (double)obj.a_cells / n_obj);
+    if (n_obj) printf("; words: restore %.0f, recut %.0f, plane A %.0f, sprites %.0f", (double)obj.w_restore / n_obj, (double)obj.w_recut / n_obj, (double)obj.w_a / n_obj, (double)obj.w_sprite / n_obj);
+    printf(")");
     printf(" (%u screen cells drawn in %u updates, %u of them whole screens; line bytes %u planar, %u a pixel at a time)", draw.cells_drawn, draw.updates, draw.full_updates, draw.bytes_fast, draw.bytes_slow);
     if (getenv("HALCHECK_WHY")) for (int i = 0; i < 26; i++) if (disp.why[i]) printf(" why[%d]=%u", i, disp.why[i]);
     printf(" (DMAs %u, fills %u, VRAM copies %u, VRAM reads %u, sound commands %u, restarts %u, other $96 %u)\n",
