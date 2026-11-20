@@ -5,6 +5,7 @@
  * changed, and composes the lines where the VDP's sprite limits apply. On the host the blits run in
  * blit.c's C model, so amiga/tools/halcheck.c's frame-by-frame check covers how they are set up. */
 #include <string.h>
+#include <stdint.h>
 #include "disp_core.h"
 #include "disp_obj.h"
 #include "disp_draw.h"
@@ -259,16 +260,22 @@ static void a_changes(int tiles)
 }
 
 /* plane A of one priority over the screen lines marked in `rows` that have some of it, in bands */
-static void op_a(uint8_t *buf, int b, const uint8_t *mask, const int16_t *count, const uint8_t *rows)
+static void op_a(uint8_t *buf, int b, const uint8_t *mask, const uint8_t (*fast)[SWMAX], const int16_t *count, const uint8_t *rows)
 {
     for (int y = 0; y < SH; y++) {
         if (!rows[y] || !count[y]) continue;
         int y1 = y;
         while (y1 < SH && rows[y1] && count[y1]) y1++;
         int c0 = SW, c1 = -1;                             /* the band's columns with something in the mask */
-        for (int l = y; l < y1; l++)
-            for (int c = 0; c < SW; c++)
-                if (mask[(uint32_t)(l * 6) * AW + (uint32_t)c]) { if (c < c0) c0 = c; if (c > c1) c1 = c; }
+        for (int l = y; l < y1; l++) {                    /* (the Fast RAM copy of the mask: Chip RAM reads are slow) */
+            const uint8_t *f = fast[l];
+            int c = 0;
+            while (c < c0 && !f[c]) c++;
+            if (c < c0) c0 = c;
+            c = SW - 1;
+            while (c > c1 && !f[c]) c--;
+            if (c > c1) c1 = c;
+        }
         if (c1 < 0) { y = y1; continue; }
         int w0 = c0 >> 1, w1 = c1 >> 1, x = obj.px0 + w0 * 16;
         int words = w1 - w0 + 1 + ((x & 15) ? 1 : 0);
@@ -333,26 +340,26 @@ static void sprite_list(void)
 static void spr_build(const struct spr *s)
 {
     int sw = s->w / 8, sh = s->h / 8;
-    uint8_t *img = spr_img + s->link * SPR_BYTES, *mask = spr_mask + s->link * SPR_BYTES;
+    static uint32_t ti[SPR_BYTES / 4], tm[SPR_BYTES / 4];  /* (made in Fast RAM, then copied a long at a time: Chip RAM byte writes are slow) */
+    uint8_t *img = (uint8_t *)ti, *mask = (uint8_t *)tm;
     obj.sprite_builds++;
     for (int ty = 0; ty < s->h; ty++) {
         int row = (s->e & 0x1000) ? s->h - 1 - ty : ty;
-        uint8_t p6[6][SPW], m6[SPW];
-        memset(p6, 0, sizeof p6);
-        memset(m6, 0, sizeof m6);
+        uint8_t *pi = img + (uint32_t)ty * 6 * SPW, *pm = mask + (uint32_t)ty * 6 * SPW;
+        memset(pi, 0, 6 * SPW);
+        uint8_t m6[SPW] = { 0 };
         for (int tx = 0; tx < sw; tx++) {
             int col = (s->e & 0x0800) ? sw - 1 - tx : tx;
             unsigned t = ((s->e & 0x7FF) + (unsigned)(col * sh + (row >> 3))) & 0x7FF;
             uint8_t p[6], m;
             cell_row(t | (s->e & 0x6800), row & 7, p, &m);
-            for (int k = 0; k < 6; k++) p6[k][tx] = p[k];
+            for (int k = 0; k < 6; k++) pi[k * SPW + tx] = p[k];
             m6[tx] = m;
         }
-        for (int k = 0; k < 6; k++) {
-            memcpy(img + (uint32_t)(ty * 6 + k) * SPW, p6[k], SPW);
-            memcpy(mask + (uint32_t)(ty * 6 + k) * SPW, m6, SPW);
-        }
+        for (int k = 0; k < 6; k++) memcpy(pm + k * SPW, m6, SPW);
     }
+    uint32_t *di = (uint32_t *)(void *)(spr_img + s->link * SPR_BYTES), *dm = (uint32_t *)(void *)(spr_mask + s->link * SPR_BYTES);
+    for (int i = 0, n = s->h * 6 * SPW / 4; i < n; i++) { di[i] = ti[i]; dm[i] = tm[i]; }
     spr_key[s->link].e = (uint16_t)s->e;
     spr_key[s->link].size = (uint8_t)(sw << 4 | sh);
     spr_key[s->link].valid = 1;
@@ -437,13 +444,20 @@ static void cpu_compose(uint8_t *buf, int b, int y)
     disp_planar_line(y, out);
     int by = (obj.py0 + y) & 255, s0 = obj.px0 & 7, b0 = obj.px0 >> 3;
     uint8_t *l = buf + by * OBJ_LS;
+    static uint32_t tl[(SWMAX + 4) / 4];                 /* (the line's plane row made in Fast RAM, at the buffer's byte parity, then copied in longs) */
     for (int k = 0; k < 6; k++) {
-        uint8_t *d = l + k * OBJ_RW + b0;
-        if (!s0) { memcpy(d, lp[k], SW); continue; }
-        uint8_t keep = (uint8_t)(0xFF << (8 - s0));
-        d[0] = (uint8_t)((d[0] & keep) | (lp[k][0] >> s0));
-        for (int i = 1; i < SW; i++) d[i] = (uint8_t)(lp[k][i - 1] << (8 - s0) | lp[k][i] >> s0);
-        d[SW] = (uint8_t)((d[SW] & (0xFF >> s0)) | (uint8_t)(lp[k][SW - 1] << (8 - s0)));
+        uint8_t *d = l + k * OBJ_RW + b0, *t = (uint8_t *)tl + ((uintptr_t)d & 1);
+        int n = SW;
+        if (!s0) memcpy(t, lp[k], SW);
+        else {
+            uint8_t keep = (uint8_t)(0xFF << (8 - s0));
+            t[0] = (uint8_t)((d[0] & keep) | (lp[k][0] >> s0));
+            for (int i = 1; i < SW; i++) t[i] = (uint8_t)(lp[k][i - 1] << (8 - s0) | lp[k][i] >> s0);
+            t[SW] = (uint8_t)((d[SW] & (0xFF >> s0)) | (uint8_t)(lp[k][SW - 1] << (8 - s0)));
+            n = SW + 1;
+        }
+        if ((uintptr_t)d & 1) { *d++ = *t++; n--; }
+        memcpy(d, t, (size_t)n);
     }
     add(done[b], &ndone[b], &full[b], obj.px0, by, WPX + 8, 1);
     obj.cpu_lines++;
@@ -527,7 +541,7 @@ void obj_update(void)
         for (int i = 0; i < nsp; i++)
             for (int y = sp[i].y < 0 ? 0 : sp[i].y; y < sp[i].y + sp[i].h && y < SH; y++) rows[y] = 1;
     /* the painter's order: A low, sprites low, the rink's high pixels again, A high, sprites high */
-    op_a(buf, b, a_lo_m, a_row_lo, rows);
+    op_a(buf, b, a_lo_m, a_lo, a_row_lo, rows);
     for (int i = nsp - 1; i >= 0; i--) if (!sp[i].pri) op_sprite(buf, b, &sp[i], tiles);
     for (int i = 0; i < nsp; i++)
         if (!sp[i].pri) {
@@ -545,7 +559,7 @@ void obj_update(void)
         op_recut(buf, obj.px0, obj.py0 + y, WPX + 16, y1 - y);
         y = y1;
     }
-    op_a(buf, b, a_hi_m, a_row_hi, rows);
+    op_a(buf, b, a_hi_m, a_hi, a_row_hi, rows);
     for (int i = nsp - 1; i >= 0; i--) if (sp[i].pri) op_sprite(buf, b, &sp[i], tiles);
     int any_cpu = 0;
     for (int y = 0; y < SH; y++) any_cpu |= cpu_line[y];
