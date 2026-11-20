@@ -66,7 +66,8 @@ static void mark(int x, int y, int w, int h)              /* the line bytes a bo
  * of the lines it shows on, by each line's scroll (and where the plane wraps) */
 static void mark_plane_cell(int k, int i)
 {
-    int pw = disp.plane_w * 8, vmask = disp.plane_h * 8 - 1, cx = (i % disp.plane_w) * 8, cy = (i / disp.plane_w) * 8;
+    int sh = __builtin_ctz((unsigned)disp.plane_w);       /* (the planes' sizes are powers of two: no division, slow on the 68020) */
+    int pw = disp.plane_w * 8, vmask = disp.plane_h * 8 - 1, cx = (i & (disp.plane_w - 1)) * 8, cy = (i >> sh) * 8;
     for (int r = 0; r < 8; r++) {
         int y = (cy + r - disp.vs[k]) & vmask;
         if (y >= DRAW_LINES) continue;
@@ -399,7 +400,7 @@ void draw_update(void)
         }
         if (d->plane_dirty[2])
             for (int i = 0; i < d->win_w * 32; i++)
-                if (d->cell_dirty[2][i >> 3] >> (i & 7) & 1) mark((i % d->win_w) * 8, (i / d->win_w) * 8, 8, 8);
+                if (d->cell_dirty[2][i >> 3] >> (i & 7) & 1) mark((i & (d->win_w - 1)) * 8, (i >> __builtin_ctz((unsigned)d->win_w)) * 8, 8, 8);
     }
     if (tiles) {                                          /* the cells on screen that show a changed tile */
         if (d->reg[11] & 3) {                             /* (per-line scroll: every cell of the planes) */
@@ -410,7 +411,7 @@ void draw_update(void)
                 int pw = d->plane_w, ph = d->plane_h, cx0 = ((-disp_hscroll(0, k)) & (pw * 8 - 1)) >> 3, cy0 = (d->vs[k] & (ph * 8 - 1)) >> 3;
                 for (int cy = 0; cy <= DRAW_LINES / 8; cy++)
                     for (int cx = 0; cx <= d->width / 8; cx++) {
-                        int i = ((cy0 + cy) % ph) * pw + (cx0 + cx) % pw;
+                        int i = ((cy0 + cy) & (ph - 1)) * pw + ((cx0 + cx) & (pw - 1));
                         if (tile_is_dirty(d->cell[k][i])) mark_plane_cell(k, i);
                     }
             }

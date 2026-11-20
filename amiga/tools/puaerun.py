@@ -146,7 +146,13 @@ def main(core_so, kick, seconds, command, out, disks):
                     core.buttons[0] |= m
         core.run(1)
         if n in shots:
-            core.screenshot(os.path.join(out, 'shot-%07.1fs.png' % (n / fps)))
+            tag = ''
+            p = core.lib.retro_get_memory_data(retro.RETRO_MEMORY_SYSTEM_RAM)   # (the program's debug block: the pass shown)
+            chip = C.string_at(p, core.lib.retro_get_memory_size(retro.RETRO_MEMORY_SYSTEM_RAM))
+            i = chip.find(b'NHL94DBG')
+            if i >= 0:
+                tag = '-pass%05d' % struct.unpack_from('>I', chip, i + 8)[0]
+            core.screenshot(os.path.join(out, 'shot-%07.1fs%s.png' % (n / fps, tag)))
         if n % int(fps * 300) == 0:
             print('puaerun: %d s emulated' % int(n / fps), flush=True)
     core.screenshot(os.path.join(out, 'shot-end.png'))

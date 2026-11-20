@@ -76,24 +76,42 @@ static void build(UWORD *c)
     *c = 0xFFFE;
 }
 
+/* The scrolled scene's planes are fetched 64 bits at a time (AGA's FMODE 3): a quarter of the Chip RAM
+ * slots the 16-bit fetch takes, which the blitter and the CPU get instead. The fetch window is the
+ * 320-pixel one ($38 to $D0: six fetches, 48 bytes a line) and the picture's 256 pixels are shown
+ * from 32 pixels into it; the planes point at a 64-bit boundary at or before the scroll position and
+ * BPLCON1 delays them by the rest, up to 63 pixels (its AGA bits for 16 and 32). */
+#define OBJ_FMODE3 1
 void screen_prepare_obj(const UBYTE *buf, int px0, int py0)
 {
     const struct disp *d = &disp;
     UWORD *c = cop[cop_next];
-    int on = d->reg[1] & 0x40, vstart = screen_pal ? 0x3C : 0x20, f = px0 & 15;
+    int on = d->reg[1] & 0x40, vstart = screen_pal ? 0x3C : 0x20;
+#if OBJ_FMODE3
+    int F = ((px0 + 31) >> 6) << 6, delay = F + 32 - px0;  /* the first pixel fetched (a 64-bit boundary), and the delay (0-63) */
+    UWORD con1 = (UWORD)((delay & 15) | (delay & 15) << 4 | ((delay >> 4) & 3) << 10 | ((delay >> 4) & 3) << 14);
+    int first = F >> 3, fetched = 48;
+    c = mv(c, FMODE, 3);
+    c = mv(c, DDFSTRT, 0x38);
+    c = mv(c, DDFSTOP, 0xD0);
+#else
+    int f = px0 & 15;
     int w0 = f ? (px0 >> 4) : (px0 >> 4) - 1, delay = f ? 16 - f : 0;   /* the word fetched first (one before the picture) and the fine scroll */
-    c = mv(c, BPLCON0, on ? 0x6200 : 0x0200);
-    c = mv(c, BPLCON1, (UWORD)(delay << 4 | delay));
-    c = mv(c, BPLCON2, BPLCON2_KILLEHB);
-    c = mv(c, BPLCON4, 0x0011);
+    UWORD con1 = (UWORD)(delay << 4 | delay);
+    int first = 2 * w0, fetched = 34;
     c = mv(c, FMODE, 0);
-    c = mv(c, DIWSTRT, (UWORD)(vstart << 8 | 0xA1));
-    c = mv(c, DIWSTOP, (UWORD)(((vstart + 224) & 0xFF) << 8 | ((0xA1 + 256) & 0xFF)));
     c = mv(c, DDFSTRT, 0x40);                             /* 17 words: one more than the 256 pixels, for the fine scroll */
     c = mv(c, DDFSTOP, 0xC0);
-    c = mv(c, BPL1MOD, (UWORD)(OBJ_LS - 34));
-    c = mv(c, BPL2MOD, (UWORD)(OBJ_LS - 34));
-    c = plane_ptrs(c, buf + py0 * OBJ_LS + 2 * w0, OBJ_RW);
+#endif
+    c = mv(c, BPLCON0, on ? 0x6200 : 0x0200);
+    c = mv(c, BPLCON1, con1);
+    c = mv(c, BPLCON2, BPLCON2_KILLEHB);
+    c = mv(c, BPLCON4, 0x0011);
+    c = mv(c, DIWSTRT, (UWORD)(vstart << 8 | 0xA1));
+    c = mv(c, DIWSTOP, (UWORD)(((vstart + 224) & 0xFF) << 8 | ((0xA1 + 256) & 0xFF)));
+    c = mv(c, BPL1MOD, (UWORD)(OBJ_LS - fetched));
+    c = mv(c, BPL2MOD, (UWORD)(OBJ_LS - fetched));
+    c = plane_ptrs(c, buf + py0 * OBJ_LS + first, OBJ_RW);
     c = colours(c);
     wait_line(c, -1, 0);
     int split = 256 - py0;                                /* the screen line where the buffer's line 0 comes round again */
@@ -101,14 +119,14 @@ void screen_prepare_obj(const UBYTE *buf, int px0, int py0)
     for (int l = 0; l < 224; l += 8) {                    /* (the profiler's copper interrupts and the split, in line order) */
         if (!split_done && split - 1 <= l) {
             c = wait_line(c, vstart + split - 1, 0xD0);   /* (after the last fetch of the line before: 12 moves end before the next fetch) */
-            c = plane_ptrs(c, buf + 2 * w0, OBJ_RW);
+            c = plane_ptrs(c, buf + first, OBJ_RW);
             split_done = 1;
         }
         if (profiling && vstart + l < 0xFF) { c = wait_line(c, vstart + l, 0x06); c = mv(c, INTREQ, 0x8010); }
     }
     if (!split_done) {
         c = wait_line(c, vstart + split - 1, 0xD0);
-        c = plane_ptrs(c, buf + 2 * w0, OBJ_RW);
+        c = plane_ptrs(c, buf + first, OBJ_RW);
     }
     *c++ = 0xFFFF;
     *c = 0xFFFE;
