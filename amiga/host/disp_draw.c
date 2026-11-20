@@ -391,13 +391,32 @@ void draw_update(void)
     boxes[0] = boxes[1];
     /* the cells that were written, and the cells that show a tile whose pixels changed */
     int tiles = !all && d->any_tile_dirty && used_tile_dirty();
-    if (!all && (d->any_cell_dirty || tiles)) {
-        for (int k = 0; k < 2; k++)
-            for (int i = 0; i < d->plane_w * d->plane_h; i++)
-                if ((d->any_cell_dirty && (d->cell_dirty[k][i >> 3] >> (i & 7) & 1)) || (tiles && tile_is_dirty(d->cell[k][i]))) mark_plane_cell(k, i);
-        for (int i = 0; i < d->win_w * 32; i++)
-            if ((d->any_cell_dirty && (d->cell_dirty[2][i >> 3] >> (i & 7) & 1)) || (tiles && tile_is_dirty(d->cell[2][i])))
-                mark((i % d->win_w) * 8, (i / d->win_w) * 8, 8, 8);
+    if (!all && d->any_cell_dirty) {                      /* the cells written, by the dirty bytes */
+        for (int k = 0; k < 2; k++) {
+            if (!d->plane_dirty[k]) continue;
+            for (int i = 0; i < d->plane_w * d->plane_h; i += 8)
+                if (d->cell_dirty[k][i >> 3]) for (int j = i; j < i + 8; j++) if (d->cell_dirty[k][j >> 3] >> (j & 7) & 1) mark_plane_cell(k, j);
+        }
+        if (d->plane_dirty[2])
+            for (int i = 0; i < d->win_w * 32; i++)
+                if (d->cell_dirty[2][i >> 3] >> (i & 7) & 1) mark((i % d->win_w) * 8, (i / d->win_w) * 8, 8, 8);
+    }
+    if (tiles) {                                          /* the cells on screen that show a changed tile */
+        if (d->reg[11] & 3) {                             /* (per-line scroll: every cell of the planes) */
+            for (int k = 0; k < 2; k++)
+                for (int i = 0; i < d->plane_w * d->plane_h; i++) if (tile_is_dirty(d->cell[k][i])) mark_plane_cell(k, i);
+        } else
+            for (int k = 0; k < 2; k++) {
+                int pw = d->plane_w, ph = d->plane_h, cx0 = ((-disp_hscroll(0, k)) & (pw * 8 - 1)) >> 3, cy0 = (d->vs[k] & (ph * 8 - 1)) >> 3;
+                for (int cy = 0; cy <= DRAW_LINES / 8; cy++)
+                    for (int cx = 0; cx <= d->width / 8; cx++) {
+                        int i = ((cy0 + cy) % ph) * pw + (cx0 + cx) % pw;
+                        if (tile_is_dirty(d->cell[k][i])) mark_plane_cell(k, i);
+                    }
+            }
+        for (int cy = 0; cy < DRAW_LINES / 8; cy++)
+            for (int cx = 0; cx < d->width / 8; cx++)
+                if (tile_is_dirty(d->cell[2][cy * d->win_w + cx])) mark(cx * 8, cy * 8, 8, 8);
     }
     if (all) { memset(dirty, 1, sizeof dirty); memset(line_dirty, 1, sizeof line_dirty); draw.full_updates++; }
     for (int y = 0; y < DRAW_LINES; y++) {

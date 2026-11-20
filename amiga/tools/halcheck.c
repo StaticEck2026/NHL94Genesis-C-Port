@@ -342,6 +342,18 @@ void plat_frame_done(long frame)
                 if (ln[x] != obj_pixel(x, y)) { printf("diff frame %ld at %d,%d: want %d, got %d (px0 %d py0 %d)\n", frame, x, y, ln[x], obj_pixel(x, y), obj.px0, obj.py0); shown++; }
         }
     }
+    {                                                     /* HALCHECK_DRAWLOG=FILE: each frame's drawing (for finding what costs) */
+        static FILE *dl;
+        static uint32_t lc, lf, lw[26];
+        if (!dl && getenv("HALCHECK_DRAWLOG")) dl = fopen(getenv("HALCHECK_DRAWLOG"), "w");
+        if (dl) {
+            fprintf(dl, "%ld %s %d %u %u", frame, objmode ? "obj" : "draw", disp.width, draw.cells_drawn - lc, draw.full_updates - lf);
+            for (int i = 0; i < 26; i++) if (disp.why[i] != lw[i]) fprintf(dl, " w%d:%u", i, disp.why[i] - lw[i]);
+            fprintf(dl, " %06X\n", (unsigned)g.VBint);
+            lc = draw.cells_drawn; lf = draw.full_updates;
+            memcpy(lw, disp.why, sizeof lw);
+        }
+    }
     uint64_t hw = FNV0;
     for (int y = 0; y < 224; y++) {
         for (int x = 0; x < disp.width; x++) {
