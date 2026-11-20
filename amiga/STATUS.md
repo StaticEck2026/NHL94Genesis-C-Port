@@ -17,10 +17,10 @@ Only a log from a real A1200 makes anything `PASSED`. A unit with no hardware st
 | | |
 |---|---|
 | Current phase | **P5, game logic headless**: `ON-HARDWARE` (private disks with the owner, test sheet [tests/v0.5.0.md](tests/v0.5.0.md)). **P1** still `ON-HARDWARE` (0.1.0) |
-| Phase P0 | `BUILT`. P0.1: names gate PASS since 2026-11-20; lockstep and captures still `BLOCKED` on the oracle (I-2) |
+| Phase P0 | `BUILT`. P0.1b: **every repository gate runs and passes** (lockstep 23/23, captures 7192/7192, golden 20/20, names PASS); `make test`'s source lint trips on a line already in `src/` (I-7) |
 | Next unit | Waiting for the 0.1.0 and 0.5.0 logs: the pass times decide P5's go or stop (PROMPT.md 6.5). Then P2 (timing bench) and P3 (memory manager), then P6 (display) |
 | Latest ADF | **0.5.0** (P5), private only: `nhl94-aga-v0.5.0-private-verify.adf` plus the ROM halves. The public 0.5.0 is held back by A-LEGAL (D-12) |
-| Blocked on | Owner: the 0.1.0 and 0.5.0 runs on a real A1200, and D-12 (A-LEGAL and the game's committed tables). Abdul: D-4 and D-11 (`src/` changes, not needed yet). Environment: the oracle (I-2) |
+| Blocked on | Owner: the 0.1.0 and 0.5.0 runs on a real A1200, and D-12 (A-LEGAL and the game's committed tables). Abdul: D-4 and D-11 (`src/` changes, not needed yet). The `make test` lint (I-7) is for Abdul |
 | Toolchain | GNU GCC 13.3.0 and binutils 2.42 for m68k (`gcc-m68k-linux-gnu`, Ubuntu 24.04), freestanding; `amiga/tools/elf2hunk.py`; amitools 0.9.1 `xdftool`. Decision D-10 |
 
 ## Phases
@@ -30,7 +30,7 @@ Only a log from a real A1200 makes anything `PASSED`. A unit with no hardware st
 | P0 | Baseline and audit | — | BUILT (P0.1 partly BLOCKED) | Host gates pass. The ROM read map, HAL call-site map, budget draft and decisions are recorded |
 | P1 | Toolchain and boot | 0.1.0 | ON-HARDWARE | Boots on KS 3.0 and 3.1, takes the machine and gives it back, `AvailMem` the same |
 | P2 | Timing and logging bench | 0.2.0 | PLANNED | Serial and file logs, CIA profiler, measured vblank rates, bus contention table |
-| P3 | Memory manager | 0.3.0 | PLANNED | Arenas, pools, guards, high-water report, stress test, A-MEMORY |
+| P3 | Memory manager | 0.3.0 | BUILT (host-tested; hardware with the first program that uses it) | Arenas, pools, guards, high-water report, stress test, A-MEMORY |
 | P4 | Native installer | 0.4.0 | PLANNED | ROM check, deterministic data disk, A-LEGAL |
 | P5 | Game logic headless (feasibility gate) | 0.5.0 | ON-HARDWARE (built ahead of P2-P4: it is the go-or-stop gate) | A-LOGIC on every script. Worst-pass time measured. Go or stop |
 | P6 | Display: palette, tiles, front-end | 0.6.0 | PLANNED | A-DISPLAY-INTENT and A-DISPLAY-VISUAL on the front-end |
@@ -49,11 +49,13 @@ asked).
 | Unit | Phase | Plan (goal; files; gate) | State | Attempts | Result (gate output, numbers, commit) |
 |---|---|---|---|---|---|
 | P0.1 | P0 | Host gates on this commit; no files changed; all gates | BLOCKED | 0 | 2026-11-20 on f1ec3d1, GCC 13.3: `make VANILLA=1 nhl94` and `make nhl94` build with 0 warnings (`-Werror`). `make rulestest`: 71 checks, 0 failed. `make golden` then `golden-check`: the 15 boot-based runs recorded and reproduced, but the 5 that start from `out/states/faceoff.snap` are missing (they need `make vectors`, so the oracle). `make lockstep`: 0 of 23 (no vectors). `make test`: no captures. **Blocked**: `tools/e2_setup.sh` calls `tools/fetch_refs.sh`, `tools/patches/` and `tools/callgraph.py`, which are not in this repository, and the oracle needs Genesis Plus GX. Later on 2026-11-20 (the owner's go-ahead): the asm repository was cloned to `../NHL94Genesis`, and `tools/check_names.py --check`: 840 routines, ok 840, other_module 0, renamed 0, missing 0, **PASS**. Lockstep and captures remain blocked (I-2) |
+| P0.1b | P0 | The oracle and the cartridge comparison: the repository's own `tools/e2_setup.sh ROM`, then `make oracle`, `make vectors`, `make lockstep`, `tools/hybrid/capture_all.sh`, the capture tests, `make golden`, `make golden-check` | BUILT | 0 | 2026-11-20, GCC 13.3, Genesis Plus GX built with HOOK_CPU=1. **`make lockstep`: 23 of 23 vectors pass** against the cartridge (boot through four_way_game, up to 23,648 vblanks each). **Captures: 58 files, 2.1 GB; `build/captest`: 7192 of 7192 records pass**, 0 failed, 524 skipped (interrupted calls), 29 captures; the 2026-11-04 run had 10,276 records, so this recording captured fewer calls. **`make golden-check`: 20 of 20 runs identical, 2 of 2 roster-set runs, 7 of 7 states, keys / restart / reset OK.** `make rulestest` 71/71, names gate PASS 840/0/0/0. `make test` itself stops at its source lint before captest: `src/setup.c:421` (`tm->tmdata = rosters_team(team)->data;`, commit c047b41) does not match the lint's allowed `->data = rosters_team(` form (I-7). Not changed here: `src/` is outside this unit |
 | P0.2 | P0 | HAL call-site map; `amiga/notes/hal_map.md` | BUILT | 0 | Done. Finding: **the HV counter is the game's random source** (`logic.c` ×10, `title.c` seeds `g.seed`): D-9 |
 | P0.3 | P0 | ROM read map; `amiga/tools/romtouch.c`, `rommap.sh`, `romsummary.py`, `amiga/notes/rom_map.md` (page addresses only) | BUILT | 0 | Done. 172 of 256 pages (688 KB) read outside the boot checksum over 7 scripts; at most 180 KB in any second. The cartridge's checksum reads all 1 MB at boot: D-11 |
 | P0.4 | P0 | Video modes; `amiga/notes/video_modes.md` | BUILT | 0 | Done. Match and title are H32 (256 px), front-end H40 (320 px), 224 lines, no shadow/highlight. Whole-screen scroll everywhere except the title's per-line H scroll (credits) |
 | P0.5 | P0 | Memory map and frame budget drafts (below) | BUILT | 0 | Drafted from P0.2 to P0.4, plus `src/` cross-compiled for the 68020 (all 39 files compile with 0 errors, and `_Static_assert(sizeof(struct Ram) == 0x10000)` holds under the m68k ABI): game code 158 KB without `z80.c`, data 253 KB (`g` 64, `ram_host_` 128, `roster_team` 60) |
 | P1.1 | P1 | Toolchain: `amiga/Makefile`, `host/amiga.ld`, `tools/elf2hunk.py`, `tools/mkadf.sh`, `tools/noretail.py` | BUILT | 0 | `make -C amiga check`: cross build with 0 warnings; `hunktool info` reads CODE 5796, DATA 24, BSS 2264 bytes, 203 RELOC32; A-LEGAL passes on the ADF |
+| P3.1 | P3 | The memory manager: `amiga/host/arena.c`, `arena.h` (arenas with guards, scene marks, fixed pools, high-water marks, fill pattern), host stress test `amiga/tools/arenatest.c` (`make -C amiga host-tests`); A-MEMORY on hardware comes with the first program that uses it | BUILT | 1 | arenatest PASS under ASan and UBSan: 200 scenes of random blocks (alignments 4 to 32), releases back to each mark, a planted overrun caught, 100,000 random pool gets and puts against a shadow count, a full pool and a full arena failing by name. Attempt 1 failed on alignment (relative to the arena, not the address); fixed. 982 bytes of 68020 code |
 | P5.1 | P5 | `amiga/host/hal_core.c` (the game's hardware requests answered as the golden runs' host does), checked on the host by `amiga/tools/halcheck.c` and `halcheck.sh` | BUILT | 1 | **7 of 7 vanilla golden runs, 69,293 frames: work RAM and VDP state identical** (attract 7199, full_game 15999, playoff_game 14999, records_game 15699, pause_menus 8599, shootout_menus 4799, name_entry 2999). Attempt 1 hung at frame 888: the game also restarts the relay ($96 = $29), not only $D1 commands; fixed. The game never reads VRAM back; it uses VRAM copy in matches (104 to 404 a run), so the display backend must answer copies from its own tiles |
 | P5.2 | P5 | `NHL94VFY`: `src/` for the 68020 plus `hal_core.c`, `host/verify.c`, `host/libc_amiga.c`, setjmp and StackSwap in `start.S`; A-LOGIC and the pass times on hardware | ON-HARDWARE | 0 | Builds with 0 errors: 247 KB code, 277 KB BSS, no FPU opcodes, no unresolved symbols, the RAM layout constructor in the table. `src/` under the m68k ABI gives two warnings the host does not (ram.c's little-endian table unused; optsetup.c's read past an array, as the 68000 does), kept as warnings for `src/` only. Private disks built (`make -C amiga verify-disks`). Test sheet [tests/v0.5.0.md](tests/v0.5.0.md) |
 | P1.2 | P1 | Boot and takeover program: `host/start.S`, `host/boot.c`, `host/libc.c`, `host/amiga.h`, `disk/`; gate A-FIRMWARE on hardware | ON-HARDWARE | 0 | ADF 0.1.0 built. Disassembly reviewed: no FPU opcodes, no libgcc calls; the l3 vector and the hook are relocated; the copper WAITs only go down the screen (a bug found and fixed before the build). Test sheet [tests/v0.1.0.md](tests/v0.1.0.md) |
@@ -151,7 +153,8 @@ One row per ADF hand-off. The log files are kept by the owner, out of git, and n
 | ID | Found in | What | State | Fixed in |
 |---|---|---|---|---|
 | I-1 | P0.5 | Compositing two Genesis planes into one screen with the 16-bit blitter costs about a frame per full-screen copy. P7 needs each plane's palette use per scene (from the display intent stream) to choose between dual playfield (16 colours a plane) and dirty-cell compositing | open | |
-| I-2 | P0.1 | The oracle (lockstep, captures, faceoff states) cannot be set up from this repository alone, so A-LOGIC's reference for the faceoff scripts is missing | open | |
+| I-2 | P0.1 | The oracle (lockstep, captures, faceoff states) seemed impossible to set up from this repository | closed: it can; P0.1b ran it | 2026-11-20 |
+| I-7 | P0.1b | `make test`'s lint flags `src/setup.c:421` (`tm->tmdata = rosters_team(team)->data;`): the lint allows only `->data = rosters_team(`. A `src/` or Makefile change, so it is for Abdul. The capture tests pass when run directly | open | |
 | I-3 | P1.1 | The ADF is not byte-reproducible (file system timestamps) | open (known) | |
 | I-4 | P5.2 | The verify build needs 1 MB for the ROM beside 0.6 MB of program and data: a stock 2 MB A1200 booted from the verify disk should hold it, but `RAM:nhl94.bin` will not fit beside it without Fast RAM | open (test sheet says so) | |
 | I-5 | P5.1 | The game uses VRAM-to-VRAM copy in matches, so the display backend must rebuild the bytes it copies from its own tiles and cells (P6, P7) | open | |
@@ -159,6 +162,11 @@ One row per ADF hand-off. The log files are kept by the owner, out of git, and n
 
 ## Learned
 
+One line per correction the owner makes, or fact the owner supplies, with its date.
+
+* 2026-11-20 (correction): P0.1 said `tools/fetch_refs.sh`, `tools/patches/` and `tools/callgraph.py` were not in this
+  repository. They are. The listing that "showed" it was cut off at 200 files. The oracle setup is the repository's
+  own `tools/e2_setup.sh`, run in P0.1b.
 * 2026-11-20: the owner gave a general go-ahead ("if anything is blocked and needed, give allow permission"). It is
   taken as approval of the recommended options for D-1 to D-3, D-5 to D-10 and D-9. Changes to `src/` (D-4, D-11)
   still need Abdul under AGENTS.md, and weakening a gate (D-12) needs the owner's explicit answer.
@@ -169,9 +177,6 @@ One row per ADF hand-off. The log files are kept by the owner, out of git, and n
   answering pad reads with the bits the game's TH-select reads expect. Forbidden is keeping or drawing a picture from
   a model of VRAM, or timing anything the way a Genesis chip does. `hal_core.c` keeps the palette (the game reads
   it back) and VSRAM, and no VRAM.
-
-One line per correction the owner makes, or fact the owner supplies, with its date.
-
 * 2026-11-20: the owner supplied Kickstart images for 3.0 (exec 39.47), 3.1 (exec 40.10) and a "4.0". The "4.0"
   file is byte-identical to the 3.1 file (CRC32 `FC24AE0D`), so it is not a separate Kickstart. None of them
   is used: no emulator is run (PROMPT.md rule 2), and Kickstart images never go into git. The A1200 needs

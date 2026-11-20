@@ -1,6 +1,7 @@
 # The native Amiga 1200 AGA build (amiga/PROMPT.md). From the repository root: make -C amiga
 #   make -C amiga            build/amiga/NHL94AGA (the AmigaDOS program) and build/amiga/nhl94-aga-vX.Y.Z.adf
 #   make -C amiga check      the gates the host can run: the program's hunks, and A-LEGAL on the ADF (ROM=...)
+#   make -C amiga host-tests ROM=...  the host checks: arenatest (P3), halcheck on every vanilla golden run (P5)
 #   make -C amiga verify     build/amiga/NHL94VFY: the game's C for the 68020 with amiga/host/hal_core.c (P5)
 #   make -C amiga verify-disks ROM=...  the private P5 test disks (build/amiga/private: never published)
 # Toolchain (decision recorded in STATUS.md): GNU GCC and binutils for m68k (Debian/Ubuntu
@@ -65,6 +66,11 @@ $(B)/NHL94AGA: $(B)/NHL94AGA.elf tools/elf2hunk.py
 $(ADF): $(B)/NHL94AGA $(B)/NHL94VFY tools/mkadf.sh CHANGELOG.md $(wildcard disk/* disk/s/*)
 	tools/mkadf.sh $(B) $(VERSION) $@
 
+host-tests:
+	@mkdir -p ../build/amiga-tools
+	cc -std=gnu11 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined -Ihost host/arena.c tools/arenatest.c -o ../build/amiga-tools/arenatest
+	../build/amiga-tools/arenatest
+	cd .. && amiga/tools/halcheck.sh "$(CURDIR)/$(ROM)"
 check: all
 	hunktool info $(B)/NHL94AGA
 	$(PY) tools/noretail.py "$(ROM)" $(ADF)
@@ -72,4 +78,4 @@ disasm: $(B)/NHL94AGA.elf
 	$(OBJDUMP) -d $< | less
 clean:
 	rm -f $(B)/*.o $(B)/game/*.o $(B)/NHL94AGA $(B)/NHL94AGA.elf $(B)/NHL94AGA.map $(B)/NHL94VFY $(B)/NHL94VFY.elf $(B)/NHL94VFY.map $(B)/version.h
-.PHONY: all check disasm clean verify verify-disks FORCE
+.PHONY: all check disasm clean verify verify-disks host-tests FORCE
