@@ -21,6 +21,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 import retro  # noqa: E402
 
 ENV_GET_LOG_INTERFACE = 27
+ENV_SET_KEYBOARD_CALLBACK = 12
+keyboard_event_t = C.CFUNCTYPE(None, C.c_bool, C.c_uint, C.c_uint32, C.c_uint16)
+RETROK = dict(P=112, RETURN=13, SPACE=32, ESCAPE=27, UP=273, DOWN=274, RIGHT=275, LEFT=276, Z=122, X=120, C=99)
 RETRO_PIXEL_FORMAT_XRGB8888 = 1
 log_printf_t = C.CFUNCTYPE(None, C.c_int, C.c_char_p)   # (the core's varargs are ignored: the format is logged)
 LOG = []
@@ -33,7 +36,12 @@ def _log(level, fmt):
 
 class PuaeCore(retro.Core):
     """the repository's frontend, with the log interface and the 32-bit pixel format PUAE asks for"""
+    keyboard = None
+
     def _environment(self, cmd, data):
+        if cmd == ENV_SET_KEYBOARD_CALLBACK:              # (the core's keyboard: PUAE_KEYS presses keys through it)
+            self.keyboard = keyboard_event_t(C.cast(data, C.POINTER(C.c_void_p))[0])
+            return True
         if cmd == ENV_GET_LOG_INTERFACE:
             self._cb_log = log_printf_t(_log)
             C.cast(data, C.POINTER(C.c_void_p))[0] = C.cast(self._cb_log, C.c_void_p).value
@@ -118,7 +126,19 @@ def main(core_so, kick, seconds, command, out, disks):
         for nm in names.split('+'):
             mask |= 1 << retro.JOY[nm.upper()]
         presses.append((int(t0 * fps), int(t1 * fps), mask))
+    keys = []                                             # PUAE_KEYS="t0-t1:P,...": keyboard keys held from t0 to t1 s
+    for item in filter(None, os.environ.get('PUAE_KEYS', '').split(',')):
+        span, names = item.split(':')
+        t0, t1 = (float(x) for x in span.split('-'))
+        for nm in names.split('+'):
+            keys.append((int(t0 * fps), int(t1 * fps), RETROK[nm.upper()]))
     for n in range(1, total + 1):
+        if core.keyboard:
+            for a, b, k in keys:
+                if n == a:
+                    core.keyboard(True, k, 0, 0)
+                elif n == b:
+                    core.keyboard(False, k, 0, 0)
         if presses:
             core.buttons[0] = 0
             for a, b, m in presses:

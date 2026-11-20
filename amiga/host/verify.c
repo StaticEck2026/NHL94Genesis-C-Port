@@ -313,6 +313,13 @@ static void run_one(void)
     core_power_on(0);
     intent_on = K->intent;
     intent_take();
+    if (K->play) {                                        /* the save RAM: records and playoffs, kept beside the program (P10) */
+        ULONG sn;
+        uint8_t *sv = libc_load("PROGDIR:NHL94.sav", &sn);
+        if (sv && sn == sizeof core.sram) { memcpy(core.sram, sv, sizeof core.sram); logf_("save RAM: NHL94.sav read\n"); }
+        free(sv);
+        core.sram_dirty = 0;
+    }
     CALL(DOSBase, -198, REG(D1, 150));                    /* Delay(3 s): the floppy motor stops before Forbid */
     int profiling = !K->show && K->profile && prof_start();
     K->profiling = profiling;
@@ -349,6 +356,10 @@ static void run_one(void)
         screen_close();
         if (K->dbg) K->dbg[5] = 11;
         machine_taken = 0;
+        if (K->play && core.sram_dirty) {
+            if (libc_save("PROGDIR:NHL94.sav", core.sram, sizeof core.sram)) logf_("save RAM: NHL94.sav written\n");
+            else logf_("save RAM: NHL94.sav could not be written (a write-protected disk?)\n");
+        }
         if (sound_on) audio_stop();
         sound_on = 0;
         if (snd_chip) CALL(SysBase, LVO_FreeMem, REG(A1, snd_chip), REG(D0, SOUND_CHIP_BYTES));

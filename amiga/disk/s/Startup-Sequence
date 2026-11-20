@@ -1,6 +1,6 @@
 ; NHL94AGA boot disk. Only the Shell's built-in commands are used: this disk carries no
-; Workbench files. From your own Shell: DF0:NHL94VFY (P5 logic check), DF0:NHL94AGA (P1 boot test)
+; Workbench files. From your own Shell: DF0:NHL94VFY PLAY (the game), DF0:NHL94VFY (the checks)
 Echo "NHL94AGA (native Amiga 1200 AGA port), see ReadMe and Credits.txt on this disk"
-Echo "P5: the game's logic on this Amiga. Left mouse button skips a script."
-NHL94VFY
-Echo "Finished. The log is NHL94VFY.log on this disk (or RAM:)."
+Echo "The game: joystick in port 2 (or a CD32 pad); keyboard: cursor keys, Z X C, P = Start, Esc quits"
+NHL94VFY PLAY
+Echo "Finished. NHL94VFY.log on this disk (or RAM:) says what happened."

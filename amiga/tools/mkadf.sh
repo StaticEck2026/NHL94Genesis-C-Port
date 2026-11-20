@@ -2,6 +2,7 @@
 # Build a bootable NHL94AGA ADF (880 KB DD, FFS, label NHL94AGA, a standard bootblock): the boot test
 # (NHL94AGA), the P5 verify program (NHL94VFY) with the repository's input scripts, amiga/disk/, and
 # amiga/CHANGELOG.md as Changelog.txt. No ROM bytes go on it (A-LEGAL, amiga/tools/noretail.py).
+# STARTUP=Startup-Verify: the private disks boot into the checks instead of the game.
 # With REFS=DIR (amiga/tools/mkverify.sh), DIR/*.h32 go on as refs/ (REFEXT=i32: the display intent
 # hashes instead): a PRIVATE disk, made from the ROM, never published or committed.
 # Usage: mkadf.sh BUILD_DIR VERSION OUT.adf
@@ -22,7 +23,7 @@ PY
 rm -f "$OUT"
 cmds=(create + format NHL94AGA ffs + boot install
       + write "$B/NHL94AGA" NHL94AGA + write "$B/NHL94VFY" NHL94VFY
-      + makedir s + write disk/s/Startup-Sequence s/Startup-Sequence
+      + makedir s + write "disk/s/${STARTUP:-Startup-Sequence}" s/Startup-Sequence
       + write disk/ReadMe ReadMe + write disk/Credits.txt Credits.txt + write "$tmp/Changelog.txt" Changelog.txt
       + makedir scripts)
 for s in $SCRIPTS; do cmds+=(+ write "../tools/oracle/scripts/$s" "scripts/$s"); done
