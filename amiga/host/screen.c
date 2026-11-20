@@ -3,6 +3,7 @@
 #include "libc_amiga.h"
 #include "screen.h"
 #include "disp_core.h"
+#include "disp_obj.h"
 #include "prof.h"
 
 UBYTE *screen_plane[6];
@@ -27,6 +28,26 @@ static ULONG rgb24(UWORD c)
 
 static UWORD *mv(UWORD *c, UWORD reg, UWORD v) { *c++ = reg; *c++ = v; return c; }
 
+static UWORD *colours(UWORD *c);
+static UWORD *plane_ptrs(UWORD *c, const UBYTE *line0, int stride)
+{
+    for (int k = 0; k < 6; k++) {
+        ULONG p = (ULONG)(line0 + k * stride);
+        c = mv(c, (UWORD)(BPL1PTH + 4 * k), (UWORD)(p >> 16));
+        c = mv(c, (UWORD)(BPL1PTH + 4 * k + 2), (UWORD)p);
+    }
+    return c;
+}
+static UWORD *wait_line(UWORD *c, int line, int h)       /* a copper WAIT for (line, h); lines past 255 after the $FFDF wait */
+{
+    static int past;
+    if (line < 0) { past = 0; return c; }
+    if (line > 255 && !past) { *c++ = 0xFFDF; *c++ = 0xFFFE; past = 1; }
+    *c++ = (UWORD)((line & 0xFF) << 8 | (h & 0xFE) | 1);
+    *c++ = 0xFFFE;
+    return c;
+}
+
 static void build(UWORD *c)
 {
     const struct disp *d = &disp;
@@ -44,11 +65,51 @@ static void build(UWORD *c)
     c = mv(c, DDFSTOP, w320 ? 0xD0 : 0xC0);
     c = mv(c, BPL1MOD, w320 ? 0 : 8);
     c = mv(c, BPL2MOD, w320 ? 0 : 8);
-    for (int k = 0; k < 6; k++) {
-        ULONG p = (ULONG)screen_plane[k];
-        c = mv(c, (UWORD)(BPL1PTH + 4 * k), (UWORD)(p >> 16));
-        c = mv(c, (UWORD)(BPL1PTH + 4 * k + 2), (UWORD)p);
+    c = plane_ptrs(c, screen_plane[0], SCREEN_PLANE_BYTES);
+    c = colours(c);
+    if (profiling)                                        /* a copper interrupt every 8 lines of the picture: the profiler's samples */
+        for (int l = vstart; l < vstart + 224 && l < 0xFF; l += 8) {
+            *c++ = (UWORD)(l << 8 | 0x07); *c++ = 0xFFFE;
+            c = mv(c, INTREQ, 0x8010);
+        }
+    *c++ = 0xFFFF;
+    *c = 0xFFFE;
+}
+
+void screen_present_obj(const UBYTE *buf, int px0, int py0)
+{
+    const struct disp *d = &disp;
+    UWORD *c = cop[cop_next];
+    int on = d->reg[1] & 0x40, vstart = screen_pal ? 0x3C : 0x20, f = px0 & 15;
+    int w0 = f ? (px0 >> 4) : (px0 >> 4) - 1, delay = f ? 16 - f : 0;   /* the word fetched first (one before the picture) and the fine scroll */
+    c = mv(c, BPLCON0, on ? 0x6200 : 0x0200);
+    c = mv(c, BPLCON1, (UWORD)(delay << 4 | delay));
+    c = mv(c, BPLCON2, BPLCON2_KILLEHB);
+    c = mv(c, BPLCON4, 0x0011);
+    c = mv(c, FMODE, 0);
+    c = mv(c, DIWSTRT, (UWORD)(vstart << 8 | 0xA1));
+    c = mv(c, DIWSTOP, (UWORD)(((vstart + 224) & 0xFF) << 8 | ((0xA1 + 256) & 0xFF)));
+    c = mv(c, DDFSTRT, 0x40);                             /* 17 words: one more than the 256 pixels, for the fine scroll */
+    c = mv(c, DDFSTOP, 0xC0);
+    c = mv(c, BPL1MOD, (UWORD)(OBJ_LS - 34));
+    c = mv(c, BPL2MOD, (UWORD)(OBJ_LS - 34));
+    c = plane_ptrs(c, buf + py0 * OBJ_LS + 2 * w0, OBJ_RW);
+    c = colours(c);
+    wait_line(c, -1, 0);
+    int split = 256 - py0;                                /* the screen line where the buffer's line 0 comes round again */
+    if (split < 224) {
+        c = wait_line(c, vstart + split - 1, 0xD0);   /* (after the last fetch of the line before: 12 moves end before the next fetch) */
+        c = plane_ptrs(c, buf + 2 * w0, OBJ_RW);
     }
+    *c++ = 0xFFFF;
+    *c = 0xFFFE;
+    CREGL(COP1LC) = (ULONG)cop[cop_next];
+    cop_next ^= 1;
+}
+
+static UWORD *colours(UWORD *c)
+{
+    const struct disp *d = &disp;
     /* the colours: number 0 is the backdrop (register 7); 1 to 63 are the palette's own (16, 32 and 48,
      * a palette line's transparent colour, never appear in the planes) */
     for (int bank = 0; bank < 2; bank++)
@@ -62,14 +123,7 @@ static void build(UWORD *c)
                 c = mv(c, (UWORD)(COLOR00 + 2 * i), w);
             }
         }
-    c = mv(c, BPLCON3, 0x0C00);
-    if (profiling)                                        /* a copper interrupt every 8 lines of the picture: the profiler's samples */
-        for (int l = vstart; l < vstart + 224 && l < 0xFF; l += 8) {
-            *c++ = (UWORD)(l << 8 | 0x07); *c++ = 0xFFFE;
-            c = mv(c, INTREQ, 0x8010);
-        }
-    *c++ = 0xFFFF;
-    *c = 0xFFFE;
+    return mv(c, BPLCON3, 0x0C00);
 }
 
 int screen_open(int pal, int profile)

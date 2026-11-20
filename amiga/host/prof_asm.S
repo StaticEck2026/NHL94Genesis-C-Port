@@ -70,4 +70,16 @@ show_handler:
 	movem.l	(%sp)+,%d0-%d1/%a0
 	rte
 
+/* the level 2 interrupt while the machine is taken (amiga/host/input.c): the keyboard */
+	.globl	l2_handler
+l2_handler:
+	movem.l	%d0-%d1/%a0-%a1,-(%sp)
+	move.w	0xdff01e,%d0
+	btst	#3,%d0				/* PORTS */
+	beq.s	.Ll2done
+	jsr	input_l2
+.Ll2done:
+	movem.l	(%sp)+,%d0-%d1/%a0-%a1
+	rte
+
 	.section .note.GNU-stack,"",%progbits

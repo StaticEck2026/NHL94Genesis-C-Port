@@ -39,6 +39,11 @@ static void layout(void)
     d->hscroll = (uint32_t)(d->reg[13] & 0x3F) << 10;
     d->sprites = h40 ? (uint32_t)(d->reg[5] & 0x7E) << 9 : (uint32_t)(d->reg[5] & 0x7F) << 9;
     d->sprites_size = h40 ? 0x280 : 0x200;
+    /* which 64-byte blocks of VRAM hold a table: a write anywhere else is only a tile's pixels */
+    memset(d->special, 0, sizeof d->special);
+    uint32_t at[5] = { d->base[0], d->base[1], d->base[2], d->sprites, d->hscroll }, n[5] = { d->size[0], d->size[1], d->size[2], d->sprites_size, 0x380 };
+    for (int t = 0; t < 5; t++)
+        for (uint32_t o = 0; o < n[t] + 63; o += 64) d->special[((at[t] + o) & 0xFFFF) >> 6] = 1;
 }
 
 /* a cell map taken again from what was sent to its table's addresses, and the tiles' use counts */
@@ -141,12 +146,35 @@ static void put(uint16_t a, uint8_t b)
     if (table) d->cells_written++; else d->tile_bytes_written++;
 }
 
+/* a word of a tile's pixels outside every table (most writes: tile loads, the VRAM clear): four
+ * pixels into the planar row, and the tile marked when they changed */
+static inline void tile_word(uint16_t a, uint16_t w)
+{
+    uint32_t *row = &disp.tile[a >> 5][(a >> 2) & 7];
+    int x = (a & 2) * 2;
+    uint32_t now = (*row & ~(0xF0F0F0F0u >> x)) | ((c2p[w >> 8] | c2p[w & 0xFF] >> 2) >> x);
+    if (now == *row) return;
+    *row = now;
+    disp.tile_dirty[a >> 8] |= (uint8_t)(1 << ((a >> 5) & 7));
+    disp.any_tile_dirty = 1;
+    disp.tile_bytes_written += 2;
+}
+
 void disp_vram_byte(uint16_t a, uint8_t b) { put(a, b); }
-void disp_vram_word(uint16_t a, uint16_t w) { put(a, (uint8_t)(w >> 8)); put((uint16_t)(a + 1), (uint8_t)w); }
+void disp_vram_word(uint16_t a, uint16_t w)
+{
+    if (!(a & 1) && !disp.special[a >> 6]) { tile_word(a, w); return; }
+    put(a, (uint8_t)(w >> 8));
+    put((uint16_t)(a + 1), (uint8_t)w);
+}
 void disp_vram_long(uint16_t a, uint32_t v) { disp_vram_word(a, (uint16_t)(v >> 16)); disp_vram_word((uint16_t)(a + 2), (uint16_t)v); }
 void disp_vram_block(uint16_t a, const uint8_t *src, uint32_t words)
 {
-    for (uint32_t k = 0; k < 2 * words; k++) put((uint16_t)(a + k), src[k]);
+    if (a & 1) { for (uint32_t k = 0; k < 2 * words; k++) put((uint16_t)(a + k), src[k]); return; }
+    for (; words; words--, src += 2, a = (uint16_t)(a + 2)) {
+        if (!disp.special[a >> 6]) tile_word(a, (uint16_t)(src[0] << 8 | src[1]));
+        else { put(a, src[0]); put((uint16_t)(a + 1), src[1]); }
+    }
 }
 void disp_vram_fill(uint16_t a, uint8_t b, uint32_t n, uint8_t step)
 {

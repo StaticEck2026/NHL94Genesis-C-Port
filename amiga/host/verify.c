@@ -27,7 +27,9 @@
 #include "prof.h"
 #include "disp_core.h"
 #include "disp_draw.h"
+#include "disp_obj.h"
 #include "screen.h"
+#include "input.h"
 
 const char nhl94vfy_vertag[] __attribute__((used)) = "\0$VER: NHL94VFY " NHL94AGA_VERSION " (" NHL94AGA_DATE ") " NHL94AGA_COMMIT;
 
@@ -66,6 +68,7 @@ struct keep {
     int intent;                                 /* NHL94VFY <script> INTENT: check the display requests (A-DISPLAY-INTENT) */
     int show, pal;                              /* NHL94VFY <script> SHOW [PAL]: the picture on screen (P6.5), checked by its planes' hash */
     long frames_max;
+    int play;                                   /* NHL94VFY PLAY: the game itself, on screen, played with the Amiga's controllers; Esc quits */
     volatile ULONG *dbg;                        /* the debug block in Chip RAM (screen.h), for the whole run */                            /* NHL94VFY <script> ... FRAMES n: stop after n passes */
     int profile, profiling;                     /* NHL94VFY <script> PROFILE [FIRST LAST]: asked for, and running */
     long prof_first, prof_last;                 /* the passes sampled (all of them when none are named) */
@@ -112,7 +115,9 @@ static uint32_t *over;                           /* the passes longer than a fra
 static long nover;
 static int intent_on, show_on;                   /* (K->intent and K->show, beside the hooks that test them for every word) */
 static ULONG t_lines, last_vb;
-static uint16_t *times;                          /* (SHOW: each pass's logic and drawing in raster lines, for NAME.drw) */                   /* (SHOW: the time base is the beam, raster lines; the E clock stops while the machine is taken) */
+static uint16_t *times;
+static UBYTE *obj_chip, *win_planes;             /* (SHOW: the scrolled scene's bitmaps in Chip RAM; the window for the planes' hash) */
+static int was_obj;                          /* (SHOW: each pass's logic and drawing in raster lines, for NAME.drw) */                   /* (SHOW: the time base is the beam, raster lines; the E clock stops while the machine is taken) */
 static long line_ns(void) { return screen_pal ? 64000 : 63556; }
 #define OVER_MAX 4096
 static uint32_t *made;                           /* (no reference on the disk: the hashes, written for the host to compare) */
@@ -122,6 +127,7 @@ static struct result *R;
 
 uint16_t plat_buttons(int pad, long h)
 {
+    if (K->play) return input_pad(pad);
     static long at;                                       /* (the script's entry in force: frames only go up) */
     if (pad) return 0;
     while (at + 1 < script_len && script[at + 1].frame <= h) at++;
@@ -137,7 +143,12 @@ void plat_frame_done(long frame)
         screen_dbg[2] = (ULONG)frame;
         screen_dbg[5] = 1;
         ULONG t1 = screen_lines();
-        draw_update();
+        int objmode = obj_chip && obj_scene();
+        if (objmode) { obj_update(); was_obj = 1; }
+        else {
+            if (was_obj) { obj_leave(); draw_invalidate(); was_obj = 0; }
+            draw_update();
+        }
         screen_dbg[5] = 2;
         ULONG t2 = screen_lines();
         prof_on = 0;
@@ -153,8 +164,14 @@ void plat_frame_done(long frame)
             if (draw_us > R->draw_max) { R->draw_max = draw_us; R->draw_max_frame = frame; }
             if (vb_count > last_vb + 1) { R->late++; if (disp.reg[1] & 0x40) { int lit = 0; for (int i = 0; i < 64; i++) lit |= disp.pal[i]; if (lit) R->late_shown++; } }
         }
-        h = (ref || made) ? planes_hash32(screen_plane) : 0;
-        screen_present();
+        if ((ref || made) && objmode && win_planes) {
+            uint8_t *const wp[6] = { win_planes, win_planes + DRAW_PLANE_BYTES, win_planes + 2 * DRAW_PLANE_BYTES,
+                                     win_planes + 3 * DRAW_PLANE_BYTES, win_planes + 4 * DRAW_PLANE_BYTES, win_planes + 5 * DRAW_PLANE_BYTES };
+            obj_window(wp);
+            h = planes_hash32(wp);
+        } else h = (ref || made) ? planes_hash32(screen_plane) : 0;
+        if (objmode) screen_present_obj(obj.buf[obj.shown], obj.px0, obj.py0);
+        else screen_present();
         screen_dbg[5] = 3;
         screen_wait_vblank();
         screen_dbg[5] = 0;
@@ -184,7 +201,7 @@ void plat_frame_done(long frame)
     if (made && frame <= frames_wanted) made[frame - 1] = h;
     R->frames = frame;
     if (frame % 1200 == 0 && !K->profile) logf_("  %s: frame %ld, %ld differ\n", tests[test_index].name, frame, R->bad);
-    if (!(CIAA_PRA & 0x40)) { R->aborted = 1; longjmp(stop, 1); }
+    if (K->play ? input_quit() : !(CIAA_PRA & 0x40)) { R->aborted = 1; longjmp(stop, 1); }
     if (frame >= frames_wanted) longjmp(stop, 1);
     if (K->profiling) prof_sample(frame + 1 >= K->prof_first && frame + 1 <= K->prof_last);
     if (show_on) {
@@ -271,14 +288,14 @@ static void run_one(void)
     }
     const char *ext = K->show ? "p32" : K->intent ? "i32" : "h32";
     libc_format(path, sizeof path, "PROGDIR:refs/%s.%s", t->name, ext);
-    ref = libc_load(path, &n);
+    ref = K->play ? NULL : libc_load(path, &n);
     ref_len = ref ? n / 4 : 0;
-    made = ref ? NULL : malloc((size_t)t->frames * 4);
-    if (!ref) logf_("%s: no reference on this disk: its hashes go to PROGDIR:%s.%s for amiga/tools/h32compare.py\n", t->name, t->name, ext);
+    made = ref || K->play ? NULL : malloc((size_t)t->frames * 4);
+    if (!ref && !K->play) logf_("%s: no reference on this disk: its hashes go to PROGDIR:%s.%s for amiga/tools/h32compare.py\n", t->name, t->name, ext);
     if (K->intent) logf_("%s: INTENT: the hashes are of the display requests, and the pass times include the hashing\n", t->name);
-    over = K->profile ? NULL : malloc(OVER_MAX * 8);
+    over = K->profile || K->play ? NULL : malloc(OVER_MAX * 8);
     nover = 0;
-    frames_wanted = K->frames_max && K->frames_max < t->frames ? K->frames_max : t->frames;
+    frames_wanted = K->play ? 0x7FFFFFFF : K->frames_max && K->frames_max < t->frames ? K->frames_max : t->frames;
     memcpy(rules, rule_classic, sizeof rules);            /* the vanilla game (native/vanilla/stubs.c) */
     rom_cart = K->rom;
     rom_art = NULL;
@@ -296,10 +313,16 @@ static void run_one(void)
         if (!screen_open(K->pal, K->profile)) { logf_("%s: SHOW: not enough Chip RAM for the screen\n", t->name); R->aborted = 3; return; }
         disp_reset();
         draw_reset(screen_plane);
-        times = malloc((size_t)frames_wanted * 4);
+        obj_chip = (UBYTE *)CALL(SysBase, LVO_AllocMem, REG(D0, 3 * OBJ_BYTES + OBJ_RW * OBJ_RH), REG(D1, MEMF_CHIP | MEMF_CLEAR));
+        win_planes = malloc(6 * DRAW_PLANE_BYTES);
+        if (obj_chip) obj_reset(obj_chip, obj_chip + 3 * OBJ_BYTES, obj_chip + OBJ_BYTES, obj_chip + 2 * OBJ_BYTES);
+        else logf_("%s: SHOW: no Chip RAM for the scrolled scene; every picture composed\n", t->name);
+        was_obj = 0;
+        times = K->play ? NULL : malloc((size_t)frames_wanted * 4);
         if (times) memset(times, 0, (size_t)frames_wanted * 4);
         show_on = 1;
         machine_taken = 1;
+        if (K->play) input_start();
         last_vb = vb_count;
         t_lines = screen_lines();
     } else if (profiling) prof_sample(K->prof_first <= 1);
@@ -310,9 +333,14 @@ static void run_one(void)
         show_on = 0;
         prof_on = 0;
         if (K->dbg) K->dbg[5] = 10;
+        if (K->play) input_stop();
         screen_close();
         if (K->dbg) K->dbg[5] = 11;
         machine_taken = 0;
+        if (obj_chip) CALL(SysBase, LVO_FreeMem, REG(A1, obj_chip), REG(D0, 3 * OBJ_BYTES + OBJ_RW * OBJ_RH));
+        obj_chip = NULL;
+        free(win_planes);
+        win_planes = NULL;
         if (K->profile) {
             libc_format(path, sizeof path, "PROGDIR:%s.prof", t->name);
             prof_write(path);
@@ -325,9 +353,10 @@ static void run_one(void)
             free(times);
             times = NULL;
         }
-        logf_("%s: SHOW: drawing mean %ld us, max %ld us at frame %ld; %ld passes shown late (%ld with a picture); %lu screen cells drawn, %lu whole screens\n",
+        logf_("%s: SHOW: drawing mean %ld us, max %ld us at frame %ld; %ld passes shown late (%ld with a picture); %lu line bytes composed, %lu whole screens; scrolled scene %lu passes, %lu rebuilds, %lu CPU lines\n",
               t->name, (long)(R->draw_sum / (unsigned long long)(R->frames > 1 ? R->frames - 1 : 1)), R->draw_max, R->draw_max_frame,
-              R->late, R->late_shown, (unsigned long)draw.cells_drawn, (unsigned long)draw.full_updates);
+              R->late, R->late_shown, (unsigned long)draw.cells_drawn, (unsigned long)draw.full_updates,
+              (unsigned long)obj.updates, (unsigned long)obj.rebuilds, (unsigned long)obj.cpu_lines);
     } else if (profiling) {
         K->profiling = 0;
         prof_stop();
@@ -445,6 +474,8 @@ LONG amiga_main(const char *args, LONG arglen)
         if (!memcmp(args + i, "SHOW", 4)) K->show = 1;
         if (i + 3 <= arglen && !memcmp(args + i, "PAL", 3)) K->pal = 1;
     }
+    for (LONG i = 0; i + 4 <= arglen; i++)
+        if (!memcmp(args + i, "PLAY", 4)) { K->play = K->show = 1; K->only = 0; K->frames_max = 0x7FFFFFFF; }
     if (K->show) K->intent = 0;
     for (LONG i = 0; i + 7 <= arglen; i++) {
         if (memcmp(args + i, "FRAMES ", 7)) continue;

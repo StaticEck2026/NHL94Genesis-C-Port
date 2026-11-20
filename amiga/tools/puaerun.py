@@ -108,7 +108,20 @@ def main(core_so, kick, seconds, command, out, disks):
     times = [float(t) for t in os.environ['PUAE_SHOTS'].split(',')] if os.environ.get('PUAE_SHOTS') else (10, 20, 30, 60, 120, 300, 600, 1200, 2400)
     shots = {int(t * fps) for t in times if t < seconds}   # (PUAE_SHOTS=t1,t2,...: screenshots at those emulated seconds)
     print('puaerun: %d frames at %.3f Hz, %dx%d' % (total, fps, av.geometry.base_width, av.geometry.base_height), flush=True)
+    presses = []                                          # PUAE_PADS="t0-t1:B+UP,...": RetroPad buttons held from t0 to t1 s (player 1)
+    for item in filter(None, os.environ.get('PUAE_PADS', '').split(',')):
+        span, names = item.split(':')
+        t0, t1 = (float(x) for x in span.split('-'))
+        mask = 0
+        for nm in names.split('+'):
+            mask |= 1 << retro.JOY[nm.upper()]
+        presses.append((int(t0 * fps), int(t1 * fps), mask))
     for n in range(1, total + 1):
+        if presses:
+            core.buttons[0] = 0
+            for a, b, m in presses:
+                if a <= n < b:
+                    core.buttons[0] |= m
         core.run(1)
         if n in shots:
             core.screenshot(os.path.join(out, 'shot-%07.1fs.png' % (n / fps)))

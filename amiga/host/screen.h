@@ -13,6 +13,9 @@ extern int screen_pal;                    /* 1: a 50 Hz beam (PAL), 0: 60 Hz (NT
 
 int screen_open(int pal, int profile);    /* 0: not enough Chip RAM (nothing taken). profile: copper interrupts for prof.c's counts */
 void screen_present(void);                /* the copper list for the state disp_core.c holds now; shown from the next vblank */
+/* the same for the scrolled scene (disp_obj.c): a buffer of six interleaved planes, OBJ_RW bytes a
+ * plane line and 256 lines, shown from pixel px0 of line py0 (the lines wrap at 256) */
+void screen_present_obj(const UBYTE *buf, int px0, int py0);
 void screen_wait_vblank(void);            /* until the next vertical blank begins */
 ULONG screen_lines(void);                 /* raster lines since screen_open: the time base while the machine is taken */
 int screen_frame_lines(void);             /* lines a frame of this beam */

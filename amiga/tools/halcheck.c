@@ -325,6 +325,7 @@ void plat_frame_done(long frame)
     for (int y = 0; y < 224; y++) { dline(y, pic); hd = fnv(hd, pic, (size_t)disp.width * 2); }
     /* and the six bitplanes the drawing side keeps up to date, turned back into colours (with the
      * display switched off the Amiga shows no bitplanes: the backdrop) */
+    if (getenv("HALCHECK_TITLE")) { extern int title_stats(long); extern void title_draw(long); title_stats(frame); title_draw(frame); }
     static int was_obj;
     int objmode = !getenv("HALCHECK_NO_OBJ") && obj_scene();
     if (objmode) { obj_update(); was_obj = 1; n_obj++; }
