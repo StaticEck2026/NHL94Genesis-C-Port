@@ -20,6 +20,7 @@
 #include "hal_core.h"
 #include "hash.h"
 #include "intent.h"
+#include "disp_core.h"
 #include "mdrt/vdp.h"                                     /* the host build's renderer: the picture reference only */
 
 #define FNV0 0xCBF29CE484222325ull
@@ -35,8 +36,21 @@ static uint64_t fnv(uint64_t h, const void *p, size_t n)
  * of a sprite's first four also goes into the renderer's sprite cache, as its own VDP does it */
 static mdrt_vdp refv;
 #define vram refv.s.vram
+static unsigned long st_cell_bytes, st_tile_bytes, st_sat_bytes, st_hs_bytes;   /* this pass's VRAM bytes by what they are (HALCHECK_STATS) */
 static void vput(uint16_t a, uint8_t b)
 {
+    {                                                     /* which table the byte is in, by the layout registers now */
+        int h40x = core.reg[12] & 0x81;
+        uint32_t ta = (uint32_t)(core.reg[2] & 0x38) << 10, tb = (uint32_t)(core.reg[4] & 7) << 13;
+        uint32_t tw = h40x ? (uint32_t)(core.reg[3] & 0x3C) << 10 : (uint32_t)(core.reg[3] & 0x3E) << 10;
+        uint32_t hs = (uint32_t)(core.reg[13] & 0x3F) << 10, sb = h40x ? (uint32_t)(core.reg[5] & 0x7E) << 9 : (uint32_t)(core.reg[5] & 0x7F) << 9;
+        static const int cells[4] = { 32, 64, 32, 128 };
+        uint32_t plane = (uint32_t)(cells[core.reg[16] & 3] * cells[(core.reg[16] >> 4) & 3] * 2);
+        if (a >= sb && a < sb + (h40x ? 0x280u : 0x200u)) st_sat_bytes++;
+        else if (a >= hs && a < hs + 0x380) st_hs_bytes++;
+        else if ((a >= ta && a < ta + plane) || (a >= tb && a < tb + plane) || (a >= tw && a < tw + 0x1000)) st_cell_bytes++;
+        else st_tile_bytes++;
+    }
     vram[a] = b;
     int h40 = core.reg[12] & 0x81;
     uint32_t base = h40 ? (uint32_t)(core.reg[5] & 0x7E) << 9 : (uint32_t)(core.reg[5] & 0x7F) << 9, off = (uint32_t)a - base;
@@ -45,22 +59,23 @@ static void vput(uint16_t a, uint8_t b)
 static unsigned long n_words, n_block_words, n_bytes, n_fill, n_cram;   /* this frame's requests (HALCHECK_FRAMES) */
 /* each request goes into the display intent hash (intent.h: the Amiga's reference, -i) and, for the
  * golden check, into this side's copy of VRAM */
-void plat_vram_byte(uint16_t a, uint8_t b) { intent_byte(a, b); vput(a, b); n_bytes++; }
+void plat_vram_byte(uint16_t a, uint8_t b) { intent_byte(a, b); disp_vram_byte(a, b); vput(a, b); n_bytes++; }
 uint8_t plat_vram_read(uint16_t a) { return vram[a]; }
-void plat_vram_block(uint16_t a, const uint8_t *src, uint32_t words) { intent_block(a, src, words); for (uint32_t k = 0; k < 2 * words; k++) vput((uint16_t)(a + k), src[k]); n_block_words += words; }
-void plat_vram_word(uint16_t a, uint16_t w) { intent_word(a, w); vput(a, (uint8_t)(w >> 8)); vput((uint16_t)(a + 1), (uint8_t)w); n_words++; }
-void plat_vram_long(uint16_t a, uint32_t v) { intent_long(a, v); for (int k = 0; k < 4; k++) vput((uint16_t)(a + k), (uint8_t)(v >> (24 - 8 * k))); n_words += 2; }
-void plat_vram_fill(uint16_t a, uint8_t b, uint32_t n, uint8_t step) { intent_fill(a, b, n, step); n_fill += n; while (n--) { vput(a ^ 1, b); a = (uint16_t)(a + step); } }
+void plat_vram_block(uint16_t a, const uint8_t *src, uint32_t words) { intent_block(a, src, words); disp_vram_block(a, src, words); for (uint32_t k = 0; k < 2 * words; k++) vput((uint16_t)(a + k), src[k]); n_block_words += words; }
+void plat_vram_word(uint16_t a, uint16_t w) { intent_word(a, w); disp_vram_word(a, w); vput(a, (uint8_t)(w >> 8)); vput((uint16_t)(a + 1), (uint8_t)w); n_words++; }
+void plat_vram_long(uint16_t a, uint32_t v) { intent_long(a, v); disp_vram_long(a, v); for (int k = 0; k < 4; k++) vput((uint16_t)(a + k), (uint8_t)(v >> (24 - 8 * k))); n_words += 2; }
+void plat_vram_fill(uint16_t a, uint8_t b, uint32_t n, uint8_t step) { intent_fill(a, b, n, step); disp_vram_fill(a, b, n, step); n_fill += n; while (n--) { vput(a ^ 1, b); a = (uint16_t)(a + step); } }
 void plat_vram_copy(uint16_t a, uint16_t src, uint32_t n, uint8_t step)
 {
     intent_copy(a, src, n, step);
+    disp_vram_copy(a, src, n, step);
     while (n--) { vput(a ^ 1, vram[src ^ 1]); src++; a = (uint16_t)(a + step); }
 }
-void plat_cram(int i, uint16_t c) { intent_cram(i, c); n_cram++; }
-void plat_vsram(int i, uint16_t v) { intent_vsram(i, v); }
+void plat_cram(int i, uint16_t c) { intent_cram(i, c); disp_cram(i, c); n_cram++; }
+void plat_vsram(int i, uint16_t v) { intent_vsram(i, v); disp_vsram(i, v); }
 static int lit_before;                                 /* palette entries not black when this frame began */
 static int saw_blank;                                  /* this frame: the display was switched off at some point */
-void plat_reg(int r, uint8_t v) { intent_reg(r, v); if (r == 1 && !(v & 0x40)) saw_blank = 1; }
+void plat_reg(int r, uint8_t v) { intent_reg(r, v); disp_reg(r, v); if (r == 1 && !(v & 0x40)) saw_blank = 1; }
 void plat_sound_command(const uint8_t *z) { (void)z; }
 void plat_sound_reset(int running) { (void)running; }
 void plat_sound_restart(const uint8_t *z) { (void)z; }
@@ -107,8 +122,169 @@ uint16_t plat_buttons(int pad, long h)
     return b;
 }
 
-static FILE *golden, *out, *intent_out;
-static long frames_wanted, checked, bad_ram, bad_vdp, first_bad = -1, intent_passes, bad_pic, first_bad_pic;
+/* The picture amiga/host/disp_core.c's lists describe, drawn here on the host only, to check that
+ * they hold everything the picture needs: the same rules as the host build's renderer (layers,
+ * priority, the window, the sprite limits), but read from the tile cache in planar form, the cell
+ * maps, the latched sprite entries, and the palette and scroll as the backend keeps them. */
+static int dpix(unsigned e, int x, int y)                /* cell entry e: its tile's colour at x, y (flips applied) */
+{
+    if (e & 0x0800) x = 7 - x;
+    if (e & 0x1000) y = 7 - y;
+    uint32_t row = disp.tile[e & 0x7FF][y];
+    int c = 0;
+    for (int k = 0; k < 4; k++) c |= (int)((row >> (24 - 8 * k + 7 - x)) & 1) << k;
+    return c;
+}
+struct dlayer { uint8_t col[320], pri[320]; };
+static void dplane(int line, int k, int hscroll, int bug_x, struct dlayer *o)
+{
+    int w = disp.plane_w, h = disp.plane_h, width = disp.width, fine = hscroll & 15;
+    int left = width == 320 ? (disp.vs[38] & disp.vs[39]) : 0;
+    for (int x = 0; x < width; x++) {
+        int vs = disp.vs[k];
+        if (disp.reg[11] & 4) vs = x < fine ? left : disp.vs[(((x - fine) >> 4) * 2 + k) % 40];
+        int py = (line + vs) & (h * 8 - 1);
+        int px = (x - hscroll + (bug_x && x >= bug_x && x < bug_x + fine ? 16 : 0)) & (w * 8 - 1);
+        unsigned e = disp.cell[k][(py >> 3) * w + (px >> 3)];
+        int c = dpix(e, px & 7, py & 7);
+        o->col[x] = (uint8_t)(c ? (((e >> 13) & 3) << 4) | c : 0);
+        o->pri[x] = (uint8_t)(e >> 15);
+    }
+}
+static void dsprites(int line, struct dlayer *o)
+{
+    int width = disp.width, h40 = width == 320, total = h40 ? 80 : 64, per_line = h40 ? 20 : 16, dots = h40 ? 320 : 256;
+    memset(o->col, 0, sizeof o->col);
+    int link = 0, seen = 0, shown = 0, masked = 0;
+    while (seen++ < total) {
+        const uint8_t *c = disp.sat + link * 8;
+        int y = ((c[0] << 8 | c[1]) & 0x3FF) - 128, sh = (c[2] & 3) + 1, sw = ((c[2] >> 2) & 3) + 1, next = c[3] & 0x7F;
+        if (line >= y && line < y + sh * 8) {
+            if (++shown > per_line) break;
+            uint16_t at = (uint16_t)(disp.sprites + (uint32_t)(link << 3));
+            unsigned e = disp_word((uint16_t)(at + 4));
+            int rawx = disp_word((uint16_t)(at + 6)) & 0x1FF, x = rawx - 128;
+            if (rawx == 0 && shown > 1) masked = 1;
+            int row = line - y;
+            if (e & 0x1000) row = sh * 8 - 1 - row;
+            for (int cx = 0; cx < sw * 8; cx++) {
+                if (dots-- <= 0) break;
+                int sx = x + cx;
+                if (masked || sx < 0 || sx >= width || o->col[sx]) continue;
+                int tx = (e & 0x0800) ? sw * 8 - 1 - cx : cx;
+                unsigned t = ((e & 0x7FF) + (unsigned)((tx >> 3) * sh + (row >> 3))) & 0x7FF;
+                int p = dpix(t, tx & 7, row & 7);
+                if (!p) continue;
+                o->col[sx] = (uint8_t)((((e >> 13) & 3) << 4) | p);
+                o->pri[sx] = (uint8_t)(e >> 15);
+            }
+            if (masked || dots <= 0) break;
+        }
+        if (!next || next >= total) break;
+        link = next;
+    }
+}
+static void dline(int line, uint16_t *o)
+{
+    int width = disp.width;
+    uint16_t back = disp.pal[disp.reg[7] & 0x3F];
+    if (!(disp.reg[1] & 0x40)) { for (int x = 0; x < width; x++) o[x] = back; return; }
+    struct dlayer a, b, s;
+    int hl = (disp.reg[11] & 3) == 2 ? (line & ~7) : (disp.reg[11] & 3) == 3 ? line : 0;
+    int hsa = disp_word((uint16_t)(disp.hscroll + (uint32_t)(hl << 2))) & 0x3FF, hsb = disp_word((uint16_t)(disp.hscroll + (uint32_t)(hl << 2) + 2)) & 0x3FF;
+    int w0 = 0, w1 = 0, wy = (disp.reg[18] & 0x1F) * 8;
+    if ((disp.reg[18] & 0x80) ? line >= wy : line < wy) w1 = width;
+    else {
+        int wx = (disp.reg[17] & 0x1F) * 16;
+        if (wx > width) wx = width;
+        if (disp.reg[17] & 0x80) { w0 = wx; w1 = width; } else w1 = wx;
+    }
+    dplane(line, 1, hsb, 0, &b);
+    dplane(line, 0, hsa, (w0 == 0 && w1 > 0 && w1 < width) ? w1 : 0, &a);
+    for (int x = w0; x < w1; x++) {
+        unsigned e = disp.cell[2][(line >> 3) * disp.win_w + (x >> 3)];
+        int c = dpix(e, x & 7, line & 7);
+        a.col[x] = (uint8_t)(c ? (((e >> 13) & 3) << 4) | c : 0);
+        a.pri[x] = (uint8_t)(e >> 15);
+    }
+    dsprites(line, &s);
+    for (int x = 0; x < width; x++) {
+        uint8_t c = 0;
+        if (s.col[x] && s.pri[x]) c = s.col[x];
+        else if (a.col[x] && a.pri[x]) c = a.col[x];
+        else if (b.col[x] && b.pri[x]) c = b.col[x];
+        else if (s.col[x]) c = s.col[x];
+        else if (a.col[x]) c = a.col[x];
+        else if (b.col[x]) c = b.col[x];
+        if (x < 8 && (disp.reg[0] & 0x20)) c = 0;
+        o[x] = c ? disp.pal[c] : back;
+    }
+}
+
+static FILE *golden, *out, *intent_out, *stats;
+
+/* HALCHECK_STATS=FILE: a line a frame of what the picture is made of, for the display backend's
+ * design (amiga/tools/dispstats.py reads it): the mode, each plane's visible cells that are not
+ * empty, their palette lines and priority, the sprites on screen, the scroll, and the pass's VRAM
+ * bytes by kind */
+static int tile_blank(unsigned t)
+{
+    const uint8_t *p = vram + ((t & 0x7FF) << 5);
+    for (int i = 0; i < 32; i++) if (p[i]) return 0;
+    return 1;
+}
+static unsigned vw(uint32_t a) { a &= 0xFFFE; return (unsigned)(vram[a] << 8 | vram[a + 1]); }
+static void frame_stats(long frame)
+{
+    static const int cells[4] = { 32, 64, 32, 128 };
+    int h40 = core.reg[12] & 0x81, width = h40 ? 320 : 256;
+    int pw = cells[core.reg[16] & 3], ph = cells[(core.reg[16] >> 4) & 3];
+    uint32_t tab[2] = { (uint32_t)(core.reg[2] & 0x38) << 10, (uint32_t)(core.reg[4] & 7) << 13 };
+    uint32_t hs = (uint32_t)(core.reg[13] & 0x3F) << 10;
+    int n[2] = { 0, 0 }, pal[2] = { 0, 0 }, pri[2] = { 0, 0 }, hsv[2], vsv[2];
+    for (int k = 0; k < 2; k++) {
+        hsv[k] = (int)(vw(hs + 2 * (uint32_t)k) & 0x3FF);
+        vsv[k] = core.vsram[k];
+        for (int cy = 0; cy <= 28; cy++)
+            for (int cx = 0; cx <= width / 8; cx++) {
+                int py = ((cy * 8 + vsv[k]) & (ph * 8 - 1)) >> 3, px = ((cx * 8 - hsv[k]) & (pw * 8 - 1)) >> 3;
+                unsigned e = vw(tab[k] + (uint32_t)((py * pw + px) << 1));
+                if (tile_blank(e)) continue;
+                n[k]++;
+                pal[k] |= 1 << ((e >> 13) & 3);
+                pri[k] += e >> 15;
+            }
+    }
+    /* the window: its rows or columns (R17, R18) */
+    int wy = (core.reg[18] & 0x1F), wx = (core.reg[17] & 0x1F);
+    int wrows = (core.reg[18] & 0x80) ? 28 - (wy < 28 ? wy : 28) : (wy < 28 ? wy : 28), wcols = (core.reg[17] & 0x80) ? width / 16 - wx : wx;
+    /* the sprites, in link order */
+    uint32_t sb = h40 ? (uint32_t)(core.reg[5] & 0x7E) << 9 : (uint32_t)(core.reg[5] & 0x7F) << 9;
+    int total = h40 ? 80 : 64, link = 0, seen = 0, sn = 0, sarea = 0, spal = 0, spri = 0, sbig = 0;
+    static int perline[240];
+    memset(perline, 0, sizeof perline);
+    while (seen++ < total) {
+        uint32_t e = sb + (uint32_t)(link << 3);
+        int y = (int)(vw(e) & 0x3FF) - 128, sh = (vram[e + 2] & 3) + 1, sw = ((vram[e + 2] >> 2) & 3) + 1, next = vram[e + 3] & 0x7F;
+        unsigned t = vw(e + 4);
+        int x = (int)(vw(e + 6) & 0x1FF) - 128;
+        if (y < 224 && y + sh * 8 > 0 && x < width && x + sw * 8 > 0) {
+            sn++;
+            sarea += sw * sh * 64;
+            spal |= 1 << ((t >> 13) & 3);
+            spri += (int)(t >> 15);
+            for (int l = y < 0 ? 0 : y; l < y + sh * 8 && l < 224; l++) if (++perline[l] > sbig) sbig = perline[l];
+        }
+        if (!next || next >= total) break;
+        link = next;
+    }
+    int lit = 0;
+    for (int i = 0; i < 64; i++) lit += core.cram[i] != 0;
+    fprintf(stats, "%ld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%lu,%lu,%lu,%lu,%06X\n", frame, width, core.reg[1] & 0x40 ? 1 : 0, lit,
+            core.reg[11] & 7, pw, ph, n[0], pal[0], pri[0], n[1], pal[1], pri[1], wrows, wcols, sn, sarea, sbig, spal, spri,
+            hsv[0], vsv[0], hsv[1], vsv[1], st_cell_bytes, st_tile_bytes, st_sat_bytes, st_hs_bytes, (unsigned)g.VBint);
+}
+static long frames_wanted, checked, bad_ram, bad_vdp, first_bad = -1, intent_passes, bad_pic, first_bad_pic, bad_disp, first_bad_disp;
 static jmp_buf done;
 void plat_frame_done(long frame)
 {
@@ -143,11 +319,15 @@ void plat_frame_done(long frame)
     mdrt_vdp_render(&refv, pic, 320);
     uint64_t hp = FNV0;
     for (int y = 0; y < mdrt_vdp_height(&refv); y++) hp = fnv(hp, pic + y * 320, (size_t)mdrt_vdp_width(&refv) * 2);
+    uint64_t hd = FNV0;                                   /* and the picture disp_core's lists describe */
+    for (int y = 0; y < 224; y++) { dline(y, pic); hd = fnv(hd, pic, (size_t)disp.width * 2); }
     if (out) {                                            /* the Amiga's reference: ram_hash32, big-endian */
         uint32_t h = ram_hash32(ram);
         uint8_t be[4] = { (uint8_t)(h >> 24), (uint8_t)(h >> 16), (uint8_t)(h >> 8), (uint8_t)h };
         fwrite(be, 1, 4, out);
     }
+    if (stats) frame_stats(frame);
+    st_cell_bytes = st_tile_bytes = st_sat_bytes = st_hs_bytes = 0;
     uint32_t hi = intent_take();                          /* this pass's display requests (intent.h) */
     if (intent_out) {
         uint8_t be[4] = { (uint8_t)(hi >> 24), (uint8_t)(hi >> 16), (uint8_t)(hi >> 8), (uint8_t)hi };
@@ -161,6 +341,7 @@ void plat_frame_done(long frame)
         if (gr != hr) { bad_ram++; if (first_bad < 0) first_bad = frame; }
         if (gv != hv) { bad_vdp++; if (first_bad < 0) first_bad = frame; }
         if (gp != hp) { if (!bad_pic) first_bad_pic = frame; bad_pic++; }
+        if (gp != hd) { if (!bad_disp) first_bad_disp = frame; bad_disp++; }
     }
     if (frame >= frames_wanted) longjmp(done, 1);
 }
@@ -183,19 +364,24 @@ int main(int argc, char **argv_in)
     if (argc > 4 && !load_script(argv[4])) return 2;
     if (outpath) out = fopen(outpath, "wb");
     if (intentpath) intent_out = fopen(intentpath, "wb");
+    if (getenv("HALCHECK_STATS")) stats = fopen(getenv("HALCHECK_STATS"), "w");
     memcpy(rules, rule_classic, sizeof rules);            /* (the vanilla game: native/vanilla/stubs.c) */
     rom_art = NULL;
     rom_limit = ROM_SIZE;
     rosters_retail();
     core_power_on(0);
+    disp_reset();
     if (!setjmp(done)) run68k(Start);
     if (out) fclose(out);
     if (intent_out) fclose(intent_out);
+    if (stats) fclose(stats);
     printf("halcheck %s: %ld frames checked, RAM differs in %ld, VDP in %ld; %ld passes with display requests", argv[2], checked, bad_ram, bad_vdp, intent_passes);
     if (first_bad >= 0) printf(", first at frame %ld", first_bad);
     printf("; picture differs in %ld", bad_pic);
     if (bad_pic) printf(", first at frame %ld", first_bad_pic);
+    printf("; the backend's lists give another picture in %ld", bad_disp);
+    if (bad_disp) printf(", first at frame %ld", first_bad_disp);
     printf(" (DMAs %u, fills %u, VRAM copies %u, VRAM reads %u, sound commands %u, restarts %u, other $96 %u)\n",
            core.dmas, core.fills, core.copies, core.vram_reads, core.commands, core.restarts, core.odd_targets);
-    return checked && !bad_ram && !bad_vdp && !bad_pic ? 0 : 1;
+    return checked && !bad_ram && !bad_vdp && !bad_pic && !bad_disp ? 0 : 1;
 }
