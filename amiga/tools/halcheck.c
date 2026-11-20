@@ -290,6 +290,7 @@ static void frame_stats(long frame)
 }
 static long frames_wanted, checked, bad_ram, bad_vdp, first_bad = -1, intent_passes, bad_pic, first_bad_pic, bad_disp, first_bad_disp, bad_draw, first_bad_draw, n_obj;
 static jmp_buf done;
+static int skipped;
 void plat_frame_done(long frame)
 {
     static uint8_t ram[RAM_SIZE];
@@ -329,7 +330,13 @@ void plat_frame_done(long frame)
      * display switched off the Amiga shows no bitplanes: the backdrop) */
     static int was_obj;
     int objmode = !getenv("HALCHECK_NO_OBJ") && obj_scene();
-    if (objmode) { obj_update(); was_obj = 1; n_obj++; }
+    /* HALCHECK_SKIP=N: about N-1 passes in N not drawn, at random (D-18's undrawn passes); the passes
+     * drawn must still be right */
+    static uint32_t lcg = 12345;
+    lcg = lcg * 1103515245u + 12345u;
+    skipped = getenv("HALCHECK_SKIP") && (lcg >> 16) % (uint32_t)atoi(getenv("HALCHECK_SKIP")) != 0;
+    if (skipped) { }
+    else if (objmode) { obj_update(); was_obj = 1; n_obj++; }
     else {
         if (was_obj) { obj_leave(); draw_invalidate(); was_obj = 0; }
         draw_update();
@@ -440,7 +447,7 @@ void plat_frame_done(long frame)
         if (gv != hv) { bad_vdp++; if (first_bad < 0) first_bad = frame; }
         if (gp != hp) { if (!bad_pic) first_bad_pic = frame; bad_pic++; }
         if (gp != hd) { if (!bad_disp) first_bad_disp = frame; bad_disp++; }
-        if (gp != hw) { if (!bad_draw) first_bad_draw = frame; bad_draw++; }
+        if (gp != hw && !skipped) { if (!bad_draw) first_bad_draw = frame; bad_draw++; }
     }
     if (frame >= frames_wanted) longjmp(done, 1);
 }

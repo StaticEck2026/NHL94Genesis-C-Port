@@ -13,3 +13,8 @@ void input_stop(void);                    /* before the machine is given back */
 uint16_t input_pad(int pad);              /* pad 0 to 3: what the controllers assigned to it hold now */
 int input_quit(void);                     /* Esc was pressed */
 extern uint8_t input_cd32[2];             /* a CD32 pad was seen in port 1 / port 2 */
+/* the host menu's choices: swap (player 1 on port 1, player 2 on port 2), keyboard (the pad it is
+ * part of, 0 or 1), fourway (the adapter read; off: pads 2 and 3 hold nothing), filter (the audio
+ * filter and the power LED on); set before input_start */
+struct input_cfg { int swap, keyboard, fourway, filter; };
+extern struct input_cfg input_cfg;

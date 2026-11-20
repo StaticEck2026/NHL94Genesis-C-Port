@@ -93,4 +93,35 @@ l2_handler:
 	movem.l	(%sp)+,%d0-%d1/%a0-%a1
 	rte
 
+/* D-2's pacing (amiga/host/pace.c): CIA-B timer A's level 6 interrupt counts a Genesis vblank and sets
+ * the next period's latch, the base or one more by the fraction's carry, so that the mean is exact */
+	.globl	pace_handler
+pace_handler:
+	movem.l	%d0-%d1,-(%sp)
+	move.b	0xbfdd00,%d0			/* CIA-B ICR: reading it clears it */
+	btst	#0,%d0
+	beq.s	.Lpcnone
+	addq.l	#1,pace_count
+	move.w	pace_acc,%d0
+	add.w	pace_frac,%d0
+	scs	%d1
+	move.w	%d0,pace_acc
+	move.w	pace_base,%d0
+	tst.b	%d1
+	beq.s	.Lpcbase
+	addq.w	#1,%d0
+.Lpcbase:
+	move.b	%d0,0xbfd400			/* TALO, then TAHI: the latch for the period after this one */
+	lsr.w	#8,%d0
+	move.b	%d0,0xbfd500
+.Lpcnone:
+	move.w	#0x2000,0xdff09c		/* EXTER, twice */
+	move.w	#0x2000,0xdff09c
+	movem.l	(%sp)+,%d0-%d1
+	rte
+
+	.globl	pace_nop
+pace_nop:
+	rts
+
 	.section .note.GNU-stack,"",%progbits

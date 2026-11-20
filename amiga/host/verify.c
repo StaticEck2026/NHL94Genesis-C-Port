@@ -34,6 +34,8 @@
 #include "blit.h"
 #include "screen.h"
 #include "input.h"
+#include "pace.h"
+#include "hostmenu.h"
 
 const char nhl94vfy_vertag[] __attribute__((used)) = "\0$VER: NHL94VFY " NHL94AGA_VERSION " (" NHL94AGA_DATE ") " NHL94AGA_COMMIT;
 
@@ -123,7 +125,8 @@ static uint32_t *over;                           /* the passes longer than a fra
 static long nover;
 static int intent_on, show_on;                   /* (K->intent and K->show, beside the hooks that test them for every word) */
 static ULONG t_lines, last_vb, due;               /* (SKIP: the vblank the pass was due to start at) */
-static int due_set;
+static int due_set, paced;                       /* (D-2: the passes counted by CIA-B timer A at the Genesis rate, not by the beam) */
+static inline ULONG clock_now(void) { return paced ? pace_count : vb_count; }
 static uint16_t *times;
 static UBYTE *obj_chip, *win_planes, *snd_chip;
 static int sound_on;                             /* (SHOW: sound.c plays the game's sound on Paula) */             /* (SHOW: the scrolled scene's bitmaps in Chip RAM; the window for the planes' hash) */
@@ -161,7 +164,7 @@ void plat_frame_done(long frame)
         if (K->skip) {
             ULONG T = (ULONG)screen_frame_lines(), f = (t1 - t_lines + T - 1) / T;
             next_due = due + (f ? f : 1);
-            if (vb_count >= next_due) drawn = 0;
+            if (clock_now() >= next_due) drawn = 0;
         }
         int objmode = obj_chip && obj_scene();
         if (!drawn) { R->skipped++; }
@@ -198,8 +201,9 @@ void plat_frame_done(long frame)
         if (sound_on) { sound_frame(); audio_apply(); }
         screen_dbg[5] = 3;
         if (K->skip) {
-            while (vb_count < next_due) { }               /* (the next pass's vblank, unless it is past) */
-            if (vb_count > next_due + 3) { R->slip += (long)(vb_count - next_due); next_due = vb_count; }   /* (too far behind to catch up: that time is lost) */
+            while (clock_now() < next_due) { }            /* (the next pass's vblank, unless it is past) */
+            ULONG now = clock_now();
+            if (now > next_due + 3) { R->slip += (long)(now - next_due); next_due = now; }   /* (too far behind to catch up: that time is lost) */
             due = next_due;
         } else screen_wait_vblank();
         screen_dbg[5] = 0;
@@ -234,7 +238,7 @@ void plat_frame_done(long frame)
     if (K->profiling) prof_sample(frame + 1 >= K->prof_first && frame + 1 <= K->prof_last);
     if (show_on) {
         t_lines = screen_lines();
-        if (!due_set) { due = vb_count; due_set = 1; }
+        if (!due_set) { due = clock_now(); due_set = 1; }
         if (K->profile) prof_on = frame + 1 >= K->prof_first && frame + 1 <= K->prof_last;
     }
     else t_start = eclock();
@@ -332,6 +336,31 @@ static void run_one(void)
     rom_art = NULL;
     rom_limit = ROM_SIZE;
     rosters_retail();
+    if (K->play) {                                        /* the host menu (PROMPT.md 7.6), its choices kept beside the program */
+        struct hostprefs hp = { K->pal, 0, 0, 1, 1 };
+        hostmenu_load(&hp, "PROGDIR:NHL94.prefs");
+        if (K->pal) hp.pal = 1;                           /* (PLAY PAL asks for it) */
+        hostmenu_font(SysBase);
+        CALL(DOSBase, -198, REG(D1, 50));                 /* Delay(1 s): the floppy motor stops before the machine is taken */
+        int go = 1;
+        if (screen_open(hp.pal, 0)) {
+            machine_taken = 1;
+            input_start();
+            go = hostmenu_run(&hp);
+            input_stop();
+            screen_close();
+            machine_taken = 0;
+        }
+        if (!hostmenu_save(&hp, "PROGDIR:NHL94.prefs")) logf_("host menu: NHL94.prefs could not be written (a write-protected disk?)\n");
+        if (!go) { logf_("host menu: Quit\n"); R->aborted = 1; return; }
+        K->pal = hp.pal;
+        input_cfg.swap = hp.swap;
+        input_cfg.keyboard = hp.keyboard;
+        input_cfg.fourway = hp.fourway;
+        input_cfg.filter = hp.filter;
+        logf_("host menu: %s, player 1 in port %d, the keyboard player %d, 4 Way Play adapter %s, audio filter %s\n", hp.pal ? "50 Hz (PAL)" : "60 Hz (NTSC)",
+              hp.swap ? 1 : 2, hp.keyboard + 1, hp.fourway ? "on" : "off", hp.filter ? "on" : "off");
+    }
     core_power_on(K->play && K->pal);                     /* (PLAY PAL: a PAL console, 50 passes a second; the checks are NTSC's) */
     intent_on = K->intent;
     intent_take();
@@ -348,6 +377,8 @@ static void run_one(void)
     if (K->show) {
         if (K->profile && !prof_alloc()) K->profile = 0;
         screen_dbg = K->dbg;                              /* (power_on cleared the BSS) */
+        paced = K->skip && K->eclock_hz && pace_claim(SysBase);
+        if (K->skip && !paced) logf_("%s: pacing: CIA-B timer A is not free; the passes follow the beam\n", t->name);
         if (!screen_open(K->pal, K->profile)) { logf_("%s: SHOW: not enough Chip RAM for the screen\n", t->name); R->aborted = 3; return; }
         disp_reset();
         draw_reset(screen_plane);
@@ -364,6 +395,17 @@ static void run_one(void)
         show_on = 1;
         machine_taken = 1;
         if (K->play) input_start();
+        if (paced) {
+            pace_start(K->eclock_hz, K->pal);
+            ULONG mhz;
+            long ppm;
+            pace_measure(50, &mhz, &ppm);
+            int lock = ppm >= -500 && ppm <= 500;         /* D-2: within 0.05%, the beam itself */
+            logf_("%s: pacing: the vblank %lu.%03lu Hz, the Genesis %lu.%03lu Hz, %ld ppm: %s\n", t->name, mhz / 1000, mhz % 1000,
+                  pace_genesis_mhz() / 1000, pace_genesis_mhz() % 1000, ppm, lock ? "beam-locked" : "paced by CIA-B timer A");
+            if (lock) { pace_stop(); paced = 0; }
+        }
+        due_set = 0;
         last_vb = vb_count;
         t_lines = screen_lines();
     } else if (profiling) prof_sample(K->prof_first <= 1);
@@ -376,7 +418,10 @@ static void run_one(void)
         if (K->dbg) K->dbg[5] = 10;
         blit_async(0);
         if (K->play) input_stop();
+        pace_stop();
         screen_close();
+        pace_release();
+        paced = 0;
         if (K->dbg) K->dbg[5] = 11;
         machine_taken = 0;
         if (K->play && core.sram_dirty) {

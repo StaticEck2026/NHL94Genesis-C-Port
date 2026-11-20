@@ -26,10 +26,12 @@
 #define CIAB_DDRA (*(volatile UBYTE *)0xBFD200UL)
 
 uint8_t input_cd32[2];
+struct input_cfg input_cfg = { 0, 0, 1, 1 };            /* (the host menu's: D-6 as it stands) */
+#define CIAA_PRA_LED (*(volatile UBYTE *)0xBFE001UL)    /* bit 1: the power LED dim and the audio filter off when set */
 static volatile uint8_t keys[128];                       /* held, by raw key code (the level 2 handler's) */
 static void *saved_l2;
 static ULONG vbr;
-static UBYTE saved_ddra, saved_ddrb, saved_ciabddra, saved_icr_mask;
+static UBYTE saved_ddra, saved_ddrb, saved_ciabddra, saved_icr_mask, saved_led;
 void input_l2(void);                                      /* (input_asm in start.S's style: below, as a C function called by the stub) */
 void l2_handler(void);
 
@@ -62,6 +64,8 @@ void input_start(void)
     saved_ddra = CIAA_DDRA;
     saved_ddrb = CIAA_DDRB;
     saved_ciabddra = CIAB_DDRA;
+    saved_led = CIAA_PRA_LED & 0x02;
+    if (input_cfg.filter) CIAA_PRA_LED &= (UBYTE)~0x02; else CIAA_PRA_LED |= 0x02;
     CIAA_DDRB = 0x00;                                     /* the parallel port's lines as inputs (the adapter) */
     CIAB_DDRA &= (UBYTE)~0x07;                         /* BUSY, POUT and SEL as inputs */
     CREG(POTGO) = 0xFF00;                                 /* the second fire buttons readable */
@@ -83,6 +87,7 @@ void input_stop(void)
         CIAA_DDRA = saved_ddra;
         CIAA_DDRB = saved_ddrb;
         CIAB_DDRA = saved_ciabddra;
+        CIAA_PRA_LED = (UBYTE)((CIAA_PRA_LED & ~0x02) | saved_led);
         saved_icr_mask = 0;
     }
 }
@@ -126,7 +131,7 @@ uint16_t input_pad(int pad)
 {
     uint16_t b = 0;
     if (pad == 0 || pad == 1) {
-        int port = pad == 0 ? 1 : 0;                      /* pad 0: port 2, pad 1: port 1 */
+        int port = (pad == 0) != input_cfg.swap ? 1 : 0;  /* pad 0: port 2, pad 1: port 1 (the other way round when swapped) */
         b = stick(CREG(port ? JOY1DAT : JOY0DAT));
         int c = cd32(port);
         input_cd32[port] = c >= 0;
@@ -139,7 +144,7 @@ uint16_t input_pad(int pad)
             if (!(CIAA_PRA & (port ? 0x80 : 0x40))) b |= PAD_B;
             if (!(CREG(POTINP) & (port ? 0x4000 : 0x0400))) b |= PAD_A;
         }
-        if (pad == 0) {                                   /* the keyboard is pad 0 too */
+        if (pad == input_cfg.keyboard) {                  /* the keyboard is pad 0 too (or pad 1) */
             if (keys[0x4C]) b |= PAD_UP;
             if (keys[0x4D]) b |= PAD_DOWN;
             if (keys[0x4F]) b |= PAD_LEFT;
@@ -149,7 +154,7 @@ uint16_t input_pad(int pad)
             if (keys[0x33] || keys[0x40] || keys[0x44]) b |= PAD_C;
             if (keys[0x19]) b |= PAD_START;
         }
-    } else {                                              /* the four-player adapter on the parallel port */
+    } else if (input_cfg.fourway) {                       /* the four-player adapter on the parallel port */
         UBYTE d = (UBYTE)~CIAA_PRB, s = (UBYTE)~CIAB_PRA;
         int sh = pad == 2 ? 0 : 4;
         if (d >> sh & 1) b |= PAD_UP;
