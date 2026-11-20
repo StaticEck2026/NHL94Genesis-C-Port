@@ -138,7 +138,7 @@ One row per ADF hand-off. The log files are kept by the owner, out of git, and n
 
 | Version | Date | Commit | SHA-256 | State | Changelog |
 |---|---|---|---|---|---|
-| 0.1.0 | 2026-11-20 | see the program's `$VER:` | recorded when built from its commit (next row update) | ON-HARDWARE | [0.1.0](CHANGELOG.md) |
+| 0.1.0 | 2026-11-20 | 822ac01 | `1e7876438b2c9831c5b2d18544ae73b59c8064b3e3bd00e0a219cc3c045717b1` (program `NHL94AGA`: `ceda6ecc9018a78d66fa36700f71205cf3c1f8eb161c82ddb6cfb65f6f404f81`) | ON-HARDWARE | [0.1.0](CHANGELOG.md) |
 
 ## Issues
 
