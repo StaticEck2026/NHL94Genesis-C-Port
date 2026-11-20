@@ -19,8 +19,9 @@
 
 struct draw draw;
 #define CW 40
-#define CH 28
-static uint8_t dirty[CH][CW];
+static uint8_t dirty[DRAW_LINES][CW];                    /* the line bytes to draw again */
+static uint8_t line_dirty[DRAW_LINES];                   /* a byte of the line is marked */
+static uint16_t last_hs[DRAW_LINES][2], last_vs[2];      /* the scroll each line was drawn with */
 static struct { int16_t x, y, w, h; } box[2][80];        /* the sprites' places on screen: this update's and the last's */
 static int boxes[2], first = 1;
 static uint8_t rev[256];                                  /* a byte's bits in the other order (a horizontally flipped tile) */
@@ -31,6 +32,7 @@ void draw_reset(uint8_t *const planes[6])
     memset(&draw, 0, sizeof draw);
     for (int k = 0; k < 6; k++) { draw.plane[k] = planes[k]; memset(planes[k], 0, DRAW_PLANE_BYTES); }
     memset(dirty, 0, sizeof dirty);
+    memset(line_dirty, 0, sizeof line_dirty);
     boxes[0] = boxes[1] = 0;
     first = 1;
     for (int b = 0; b < 256; b++) {
@@ -46,15 +48,32 @@ void draw_reset(uint8_t *const planes[6])
 
 static int tile_is_dirty(unsigned t) { t &= 0x7FF; return disp.tile_dirty[t >> 3] >> (t & 7) & 1; }
 
-static void mark(int x, int y, int w, int h)              /* the screen cells a box of pixels touches */
+static void mark_span(int y, int x, int w)               /* the line bytes pixels x to x + w - 1 of line y lie in */
 {
     if (x < 0) { w += x; x = 0; }
-    if (y < 0) { h += y; y = 0; }
-    if (w <= 0 || h <= 0 || x >= disp.width || y >= DRAW_LINES) return;
-    int x1 = (x + w - 1) >> 3, y1 = (y + h - 1) >> 3;
+    if (w <= 0 || x >= disp.width || y < 0 || y >= DRAW_LINES) return;
+    int x1 = (x + w - 1) >> 3;
     if (x1 >= disp.width / 8) x1 = disp.width / 8 - 1;
-    if (y1 >= CH) y1 = CH - 1;
-    for (int cy = y >> 3; cy <= y1; cy++) for (int cx = x >> 3; cx <= x1; cx++) dirty[cy][cx] = 1;
+    for (int b = x >> 3; b <= x1; b++) dirty[y][b] = 1;
+    line_dirty[y] = 1;
+}
+static void mark(int x, int y, int w, int h)              /* the line bytes a box of pixels touches */
+{
+    for (int l = y < 0 ? 0 : y; l < y + h && l < DRAW_LINES; l++) mark_span(l, x, w);
+}
+
+/* a cell of plane k (index i in its map) was written or shows a changed tile: where it lies on each
+ * of the lines it shows on, by each line's scroll (and where the plane wraps) */
+static void mark_plane_cell(int k, int i)
+{
+    int pw = disp.plane_w * 8, vmask = disp.plane_h * 8 - 1, cx = (i % disp.plane_w) * 8, cy = (i / disp.plane_w) * 8;
+    for (int r = 0; r < 8; r++) {
+        int y = (cy + r - disp.vs[k]) & vmask;
+        if (y >= DRAW_LINES) continue;
+        int x = (cx + disp_hscroll(y, k)) & (pw - 1);
+        mark_span(y, x, 8);
+        mark_span(y, x - pw, 8);
+    }
 }
 
 /* ---- a pixel at a time (the lines the planar path does not cover) ---------------------------- */
@@ -71,11 +90,7 @@ static int pix(unsigned e, int x, int y)                  /* cell entry e: its t
 
 struct layer { uint8_t col[320], pri[320]; };
 
-static int hscroll_of(int line, int k)
-{
-    int hl = (disp.reg[11] & 3) == 2 ? (line & ~7) : (disp.reg[11] & 3) == 3 ? line : 0;
-    return disp_word((uint16_t)(disp.hscroll + (uint32_t)(hl << 2) + 2 * (uint32_t)k)) & 0x3FF;
-}
+static int hscroll_of(int line, int k) { return disp_hscroll(line, k); }
 
 static void window_span(int line, int *x0, int *x1)
 {
@@ -116,9 +131,9 @@ static int sprite_line(int line, struct layer *o, uint8_t *any)
         int y = ((c[0] << 8 | c[1]) & 0x3FF) - 128, sh = (c[2] & 3) + 1, sw = ((c[2] >> 2) & 3) + 1, next = c[3] & 0x7F;
         if (line >= y && line < y + sh * 8) {
             if (++shown > per_line) break;
-            uint16_t at = (uint16_t)(disp.sprites + (uint32_t)(link << 3));
-            unsigned e = disp_word((uint16_t)(at + 4));
-            int rawx = disp_word((uint16_t)(at + 6)) & 0x1FF, x = rawx - 128;
+            const uint8_t *q = disp.spr + link * 8;
+            unsigned e = (unsigned)(q[4] << 8 | q[5]);
+            int rawx = (q[6] << 8 | q[7]) & 0x1FF, x = rawx - 128;
             if (rawx == 0 && shown > 1) masked = 1;
             int row = line - y;
             if (e & 0x1000) row = sh * 8 - 1 - row;
@@ -244,9 +259,9 @@ static int sprite_boxes(int which)
     while (seen++ < total) {
         const uint8_t *c = disp.sat + link * 8;
         int y = ((c[0] << 8 | c[1]) & 0x3FF) - 128, sh = (c[2] & 3) + 1, sw = ((c[2] >> 2) & 3) + 1, next = c[3] & 0x7F;
-        uint16_t at = (uint16_t)(disp.sprites + (uint32_t)(link << 3));
-        unsigned e = disp_word((uint16_t)(at + 4));
-        int x = (disp_word((uint16_t)(at + 6)) & 0x1FF) - 128;
+        const uint8_t *q = disp.spr + link * 8;
+        unsigned e = (unsigned)(q[4] << 8 | q[5]);
+        int x = ((q[6] << 8 | q[7]) & 0x1FF) - 128;
         if (y < DRAW_LINES && y + sh * 8 > 0 && x < disp.width && x + sw * 8 > 0) {
             box[which][n].x = (int16_t)x; box[which][n].y = (int16_t)y;
             box[which][n].w = (int16_t)(sw * 8); box[which][n].h = (int16_t)(sh * 8);
@@ -322,12 +337,33 @@ static void draw_line(int y, const uint8_t *want, int cw)
     }
 }
 
+/* a tile whose pixels changed and that some cell of A, B or the window names */
+static int used_tile_dirty(void)
+{
+    for (int i = 0; i < DISP_TILES / 8; i++) {
+        unsigned m = disp.tile_dirty[i];
+        for (int j = 0; m; j++, m >>= 1) if ((m & 1) && disp.uses[i * 8 + j]) return 1;
+    }
+    return 0;
+}
+
 void draw_update(void)
 {
     struct disp *d = &disp;
-    int cw = d->width / 8, all = first || d->layout_dirty;
-    int whole = !(d->reg[11] & 7);                        /* each plane scrolls as one piece */
+    int cw = d->width / 8, all = first || d->layout_dirty || (d->reg[11] & 4);
     draw.updates++;
+    /* the scroll: the lines whose scroll changed since they were drawn (a vertical scroll moves them all) */
+    if (!all && d->scroll_dirty) {
+        if (d->vs[0] != last_vs[0] || d->vs[1] != last_vs[1]) all = 1;
+        else
+            for (int y = 0; y < DRAW_LINES; y++)
+                if (disp_hscroll(y, 0) != last_hs[y][0] || disp_hscroll(y, 1) != last_hs[y][1]) mark_span(y, 0, d->width);
+    }
+    if (all || d->scroll_dirty) {
+        for (int y = 0; y < DRAW_LINES; y++) { last_hs[y][0] = disp_hscroll(y, 0); last_hs[y][1] = disp_hscroll(y, 1); }
+        last_vs[0] = d->vs[0];
+        last_vs[1] = d->vs[1];
+    }
     /* the sprites: where they were and where they are, when anything about them changed */
     int sprite_tiles = sprite_boxes(1);
     if (!all && (d->sprites_dirty || sprite_tiles || boxes[0] || boxes[1])) {
@@ -336,34 +372,25 @@ void draw_update(void)
     }
     memcpy(box[0], box[1], sizeof box[0]);
     boxes[0] = boxes[1];
-    /* the planes' cells that were written, and the cells that show a tile whose pixels changed: the
-     * screen cells they lie under, by the scroll now (and where the plane wraps) */
-    if (!all && (d->any_cell_dirty || d->any_tile_dirty)) {
-        if (!whole) all = 1;
-        else {
-            for (int k = 0; k < 2; k++) {
-                int hs = hscroll_of(0, k), vs = d->vs[k], pw = d->plane_w * 8, ph = d->plane_h * 8;
-                for (int i = 0; i < d->plane_w * d->plane_h; i++) {
-                    if (!((d->any_cell_dirty && (d->cell_dirty[k][i >> 3] >> (i & 7) & 1)) || (d->any_tile_dirty && tile_is_dirty(d->cell[k][i])))) continue;
-                    int x = ((i % d->plane_w) * 8 + hs) & (pw - 1), y = ((i / d->plane_w) * 8 - vs) & (ph - 1);
-                    for (int wy = 0; wy < 2; wy++) for (int wx = 0; wx < 2; wx++) mark(x - wx * pw, y - wy * ph, 8, 8);
-                }
-            }
-            for (int i = 0; i < d->win_w * 32; i++)
-                if ((d->any_cell_dirty && (d->cell_dirty[2][i >> 3] >> (i & 7) & 1)) || (d->any_tile_dirty && tile_is_dirty(d->cell[2][i])))
-                    mark((i % d->win_w) * 8, (i / d->win_w) * 8, 8, 8);
-        }
+    /* the cells that were written, and the cells that show a tile whose pixels changed */
+    int tiles = !all && d->any_tile_dirty && used_tile_dirty();
+    if (!all && (d->any_cell_dirty || tiles)) {
+        for (int k = 0; k < 2; k++)
+            for (int i = 0; i < d->plane_w * d->plane_h; i++)
+                if ((d->any_cell_dirty && (d->cell_dirty[k][i >> 3] >> (i & 7) & 1)) || (tiles && tile_is_dirty(d->cell[k][i]))) mark_plane_cell(k, i);
+        for (int i = 0; i < d->win_w * 32; i++)
+            if ((d->any_cell_dirty && (d->cell_dirty[2][i >> 3] >> (i & 7) & 1)) || (tiles && tile_is_dirty(d->cell[2][i])))
+                mark((i % d->win_w) * 8, (i / d->win_w) * 8, 8, 8);
     }
-    if (all) { memset(dirty, 1, sizeof dirty); draw.full_updates++; }
-    for (int cy = 0; cy < CH; cy++) {
-        int any = 0;
-        for (int cx = 0; cx < cw; cx++) any |= dirty[cy][cx];
-        if (!any) continue;
-        for (int y = cy * 8; y < cy * 8 + 8; y++) draw_line(y, dirty[cy], cw);
-        for (int cx = 0; cx < cw; cx++) { draw.cells_drawn += dirty[cy][cx]; dirty[cy][cx] = 0; }
+    if (all) { memset(dirty, 1, sizeof dirty); memset(line_dirty, 1, sizeof line_dirty); draw.full_updates++; }
+    for (int y = 0; y < DRAW_LINES; y++) {
+        if (!line_dirty[y]) continue;
+        draw_line(y, dirty[y], cw);
+        for (int b = 0; b < cw; b++) { draw.cells_drawn += dirty[y][b]; dirty[y][b] = 0; }
+        line_dirty[y] = 0;
     }
     memset(d->tile_dirty, 0, sizeof d->tile_dirty);
     memset(d->cell_dirty, 0, sizeof d->cell_dirty);
-    d->any_tile_dirty = d->any_cell_dirty = d->layout_dirty = d->sprites_dirty = 0;
+    d->any_tile_dirty = d->any_cell_dirty = d->layout_dirty = d->sprites_dirty = d->scroll_dirty = 0;
     first = 0;
 }

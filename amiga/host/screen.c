@@ -3,13 +3,16 @@
 #include "libc_amiga.h"
 #include "screen.h"
 #include "disp_core.h"
+#include "prof.h"
 
 UBYTE *screen_plane[6];
+volatile ULONG *screen_dbg;
+ULONG show_dbg;
 int screen_pal;
 static void *GfxBase, *IntuitionBase;
 static UBYTE *planes;
 static UWORD *cop[2];
-static int cop_next;
+static int cop_next, profiling;
 static struct { void *view; ULONG vbr; void *l3; UWORD intena, dmacon, adkcon; } saved;
 #define COP_WORDS 512
 #define BPLCON2_KILLEHB 0x0200                  /* six planes are 64 colours, not extra half-brite */
@@ -60,19 +63,28 @@ static void build(UWORD *c)
             }
         }
     c = mv(c, BPLCON3, 0x0C00);
+    if (profiling)                                        /* a copper interrupt every 8 lines of the picture: the profiler's samples */
+        for (int l = vstart; l < vstart + 224 && l < 0xFF; l += 8) {
+            *c++ = (UWORD)(l << 8 | 0x07); *c++ = 0xFFFE;
+            c = mv(c, INTREQ, 0x8010);
+        }
     *c++ = 0xFFFF;
     *c = 0xFFFE;
 }
 
-int screen_open(int pal)
+int screen_open(int pal, int profile)
 {
     screen_pal = pal;
+    profiling = profile;
     GfxBase = (void *)CALL(SysBase, LVO_OpenLibrary, REG(A1, "graphics.library"), REG(D0, 39));
     IntuitionBase = (void *)CALL(SysBase, LVO_OpenLibrary, REG(A1, "intuition.library"), REG(D0, 39));
     planes = (UBYTE *)CALL(SysBase, LVO_AllocMem, REG(D0, 6 * SCREEN_PLANE_BYTES), REG(D1, MEMF_CHIP | MEMF_CLEAR));
-    cop[0] = (UWORD *)CALL(SysBase, LVO_AllocMem, REG(D0, 2 * COP_WORDS * 2), REG(D1, MEMF_CHIP | MEMF_CLEAR));
+    cop[0] = (UWORD *)CALL(SysBase, LVO_AllocMem, REG(D0, 2 * COP_WORDS * 2 + 64), REG(D1, MEMF_CHIP | MEMF_CLEAR));
     if (!GfxBase || !planes || !cop[0]) { screen_close(); return 0; }
     cop[1] = cop[0] + COP_WORDS;
+    screen_dbg = (volatile ULONG *)(cop[0] + 2 * COP_WORDS);
+    screen_dbg[0] = 0x4E484C39; screen_dbg[1] = 0x34444247;   /* "NHL94DBG" */
+    show_dbg = (ULONG)screen_dbg;
     for (int k = 0; k < 6; k++) screen_plane[k] = planes + k * SCREEN_PLANE_BYTES;
     build(cop[0]);
     saved.view = GFX_ACTIVIEW(GfxBase);
@@ -92,7 +104,7 @@ int screen_open(int pal)
     CREG(DMACON) = 0x7FFF;
     void *volatile *vec = (void *volatile *)(saved.vbr + 0x6C);
     saved.l3 = *vec;
-    *vec = (void *)l3_handler;
+    *vec = (void *)show_handler;                        /* (vblanks counted; copper interrupts sampled when profiling) */
     vb_hook = 0;
     vb_count = 0;
     CREG(BEAMCON0) = pal ? 0x0020 : 0x0000;
@@ -104,7 +116,7 @@ int screen_open(int pal)
     CREG(COPJMP1) = 0;
     cop_next = 1;
     CREG(DMACON) = DMAF_SETCLR | DMAF_MASTER | DMAF_RASTER | DMAF_COPPER;
-    CREG(INTENA) = INTF_SETCLR | INTF_INTEN | INTF_VERTB;
+    CREG(INTENA) = (UWORD)(INTF_SETCLR | INTF_INTEN | INTF_VERTB | (profile ? 0x0010 : 0));
     return 1;
 }
 
@@ -156,7 +168,9 @@ void screen_close(void)
         saved.vbr = 0;
     }
     if (planes) CALL(SysBase, LVO_FreeMem, REG(A1, planes), REG(D0, 6 * SCREEN_PLANE_BYTES));
-    if (cop[0]) CALL(SysBase, LVO_FreeMem, REG(A1, cop[0]), REG(D0, 2 * COP_WORDS * 2));
+    show_dbg = 0;
+    screen_dbg = 0;
+    if (cop[0]) CALL(SysBase, LVO_FreeMem, REG(A1, cop[0]), REG(D0, 2 * COP_WORDS * 2 + 64));
     if (IntuitionBase) CALL(SysBase, LVO_CloseLibrary, REG(A1, IntuitionBase));
     if (GfxBase) CALL(SysBase, LVO_CloseLibrary, REG(A1, GfxBase));
     planes = 0; cop[0] = cop[1] = 0; GfxBase = IntuitionBase = 0;

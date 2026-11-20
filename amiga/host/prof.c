@@ -11,6 +11,7 @@
 #include "prof.h"
 
 ULONG prof_base, prof_size, prof_other;
+volatile ULONG prof_on;
 ULONG *prof_hist;
 extern char _start[], __text_end[];
 void prof_handler(void);
@@ -61,6 +62,30 @@ int prof_start(void)
     CREG(DMACON) = DMAF_SETCLR | DMAF_MASTER | DMAF_COPPER;
     CREG(INTENA) = INTF_SETCLR | INTF_INTEN | 0x0010;     /* COPER */
     return 1;
+}
+
+int prof_alloc(void)
+{
+    prof_base = (ULONG)_start;
+    prof_size = (ULONG)(__text_end - _start);
+    prof_other = 0;
+    prof_on = 0;
+    prof_hist = (ULONG *)CALL(SysBase, LVO_AllocMem, REG(D0, ((prof_size >> 4) + 1) * 4), REG(D1, MEMF_ANY | MEMF_CLEAR));
+    return prof_hist != 0;
+}
+
+void prof_write(const char *path)
+{
+    ULONG n = (prof_size >> 4) + 1;
+    ULONG head[3] = { 0x50524F46, n, prof_other };
+    ULONG fh = CALL(DOSBase, LVO_Open, REG(D1, path), REG(D2, MODE_NEWFILE));
+    if (fh) {
+        CALL(DOSBase, LVO_Write, REG(D1, fh), REG(D2, head), REG(D3, sizeof head));
+        CALL(DOSBase, LVO_Write, REG(D1, fh), REG(D2, prof_hist), REG(D3, n * 4));
+        CALL(DOSBase, LVO_Close, REG(D1, fh));
+    }
+    CALL(SysBase, LVO_FreeMem, REG(A1, prof_hist), REG(D0, n * 4));
+    prof_hist = 0;
 }
 
 void prof_sample(int on)

@@ -115,6 +115,10 @@ def main(core_so, kick, seconds, command, out, disks):
         if n % int(fps * 300) == 0:
             print('puaerun: %d s emulated' % int(n / fps), flush=True)
     core.screenshot(os.path.join(out, 'shot-end.png'))
+    if os.environ.get('PUAE_DUMP'):                       # (Chip RAM at the end, for a debug block to be found in it)
+        p = core.lib.retro_get_memory_data(retro.RETRO_MEMORY_SYSTEM_RAM)
+        n = core.lib.retro_get_memory_size(retro.RETRO_MEMORY_SYSTEM_RAM)
+        open(os.environ['PUAE_DUMP'], 'wb').write(C.string_at(p, n))
     if LOG:
         print('core warnings: ' + ' | '.join(sorted(set(LOG))[:20]))
     core.lib.retro_unload_game()

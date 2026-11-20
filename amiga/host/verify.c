@@ -73,11 +73,12 @@ static struct keep *K __attribute__((section(".keep")));
 
 /* ---- the log: the Shell, the serial port, and the file at the end ----------------------------- */
 
+static int machine_taken;                        /* (SHOW: the Shell and exec's serial output need the OS running: the log only) */
 static void logs(const char *s)
 {
-    libc_write(s);
+    if (!machine_taken) libc_write(s);
     for (const char *p = s; *p; p++) {
-        CALL(K->sys, LVO_RawPutChar, REG(D0, (UBYTE)*p));
+        if (!machine_taken) CALL(K->sys, LVO_RawPutChar, REG(D0, (UBYTE)*p));
         if (K->loglen < sizeof K->log - 1) K->log[K->loglen++] = *p;
     }
 }
@@ -132,9 +133,13 @@ void plat_frame_done(long frame)
     long us, draw_us = 0;
     uint32_t h;
     if (show_on) {                                        /* the pass, then its picture: drawn, then shown from the next vblank */
+        screen_dbg[2] = (ULONG)frame;
+        screen_dbg[5] = 1;
         ULONG t1 = screen_lines();
         draw_update();
+        screen_dbg[5] = 2;
         ULONG t2 = screen_lines();
+        prof_on = 0;
         us = (long)((t1 - t_lines) * (ULONG)line_ns() / 1000);
         draw_us = (long)((t2 - t1) * (ULONG)line_ns() / 1000);
         if (times && frame <= frames_wanted) {
@@ -149,7 +154,9 @@ void plat_frame_done(long frame)
         }
         h = (ref || made) ? planes_hash32(screen_plane) : 0;
         screen_present();
+        screen_dbg[5] = 3;
         screen_wait_vblank();
+        screen_dbg[5] = 0;
         last_vb = vb_count;
     } else {
         us = to_us(eclock() - t_start);
@@ -179,7 +186,10 @@ void plat_frame_done(long frame)
     if (!(CIAA_PRA & 0x40)) { R->aborted = 1; longjmp(stop, 1); }
     if (frame >= frames_wanted) longjmp(stop, 1);
     if (K->profiling) prof_sample(frame + 1 >= K->prof_first && frame + 1 <= K->prof_last);
-    if (show_on) t_lines = screen_lines();
+    if (show_on) {
+        t_lines = screen_lines();
+        if (K->profile) prof_on = frame + 1 >= K->prof_first && frame + 1 <= K->prof_last;
+    }
     else t_start = eclock();
 }
 
@@ -280,12 +290,14 @@ static void run_one(void)
     int profiling = !K->show && K->profile && prof_start();
     K->profiling = profiling;
     if (K->show) {
-        if (!screen_open(K->pal)) { logf_("%s: SHOW: not enough Chip RAM for the screen\n", t->name); R->aborted = 3; return; }
+        if (K->profile && !prof_alloc()) K->profile = 0;
+        if (!screen_open(K->pal, K->profile)) { logf_("%s: SHOW: not enough Chip RAM for the screen\n", t->name); R->aborted = 3; return; }
         disp_reset();
         draw_reset(screen_plane);
         times = malloc((size_t)frames_wanted * 4);
         if (times) memset(times, 0, (size_t)frames_wanted * 4);
         show_on = 1;
+        machine_taken = 1;
         last_vb = vb_count;
         t_lines = screen_lines();
     } else if (profiling) prof_sample(K->prof_first <= 1);
@@ -294,7 +306,13 @@ static void run_one(void)
     if (!setjmp(stop)) run68k(Start);
     if (show_on) {
         show_on = 0;
+        prof_on = 0;
         screen_close();
+        machine_taken = 0;
+        if (K->profile) {
+            libc_format(path, sizeof path, "PROGDIR:%s.prof", t->name);
+            prof_write(path);
+        }
         if (times) {                                      /* NAME.drw: big-endian (logic lines, drawing lines) a pass */
             libc_format(path, sizeof path, "PROGDIR:%s.drw", t->name);
             libc_save(path, times, (ULONG)R->frames * 4);

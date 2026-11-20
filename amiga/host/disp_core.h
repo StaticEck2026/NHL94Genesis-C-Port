@@ -27,6 +27,9 @@ struct disp {
     uint32_t tile[DISP_TILES][8];                         /* a tile's rows: byte k (from the top) is bitplane k, the left pixel its bit 7 */
     uint16_t cell[3][DISP_PLANE_CELLS];                   /* planes A and B and the window, row by row, in the table's own width */
     uint8_t sat[0x280];                                   /* each sprite entry's bytes 0 to 3, as latched */
+    uint8_t spr[0x280];                                   /* the sprite table's bytes as last written (its tile and X words) */
+    uint8_t hsc[0x380];                                   /* the horizontal scroll table's bytes */
+    uint16_t uses[DISP_TILES];                            /* how many cells of A, B and the window name each tile */
     /* the layout, from the registers */
     int width, plane_w, plane_h, win_w;                   /* 256 or 320 pixels; cells */
     uint32_t base[3], size[3];                            /* the tables of A, B and the window: VRAM address and bytes */
@@ -34,7 +37,8 @@ struct disp {
     /* marks for the drawing side (disp_draw.c clears them when it has drawn) */
     uint8_t tile_dirty[DISP_TILES / 8];                   /* a tile's pixels changed */
     uint8_t cell_dirty[3][DISP_PLANE_CELLS / 8];          /* a cell of A, B or the window was written */
-    uint8_t any_tile_dirty, any_cell_dirty, layout_dirty; /* layout_dirty: a register that places or scrolls the picture, a scroll entry */
+    uint8_t any_tile_dirty, any_cell_dirty, layout_dirty; /* layout_dirty: a register that places or sizes the picture */
+    uint8_t scroll_dirty;                                 /* a scroll entry in use was written */
     uint8_t sprites_dirty;                                /* a byte of the sprite table was written */
     uint32_t cells_written, tile_bytes_written;
     uint32_t why[26];                                     /* what set layout_dirty, counted: a register (0 to 23), a scroll entry (24), the horizontal scroll table (25) */
@@ -51,6 +55,12 @@ void disp_vram_long(uint16_t a, uint32_t v);
 void disp_vram_block(uint16_t a, const uint8_t *src, uint32_t words);
 void disp_vram_fill(uint16_t a, uint8_t b, uint32_t n, uint8_t step);
 void disp_vram_copy(uint16_t a, uint16_t src, uint32_t n, uint8_t step);
+static inline uint16_t disp_hscroll(int line, int k)     /* the horizontal scroll of plane k (0 A, 1 B) on a line, by the scroll mode */
+{
+    int hl = (disp.reg[11] & 3) == 2 ? (line & ~7) : (disp.reg[11] & 3) == 3 ? line : 0;
+    const uint8_t *p = disp.hsc + (hl << 2) + 2 * k;
+    return (uint16_t)((p[0] << 8 | p[1]) & 0x3FF);
+}
 /* what was sent to an address, from the tile cache */
 uint8_t disp_byte(uint16_t a);
 uint16_t disp_word(uint16_t a);
