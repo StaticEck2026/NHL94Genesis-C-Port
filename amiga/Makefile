@@ -79,7 +79,7 @@ host-tests:
 	cd .. && amiga/tools/halcheck.sh "$(CURDIR)/$(ROM)"
 check: all
 	hunktool info $(B)/NHL94AGA
-	$(PY) tools/noretail.py "$(ROM)" $(ADF)
+	$(PY) tools/noretail.py --program $(B)/NHL94VFY "$(ROM)" $(ADF)
 disasm: $(B)/NHL94AGA.elf
 	$(OBJDUMP) -d $< | less
 clean:

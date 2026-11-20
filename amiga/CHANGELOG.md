@@ -59,9 +59,8 @@ Changed:
   disk.
 
 Known issues:
-* A-LEGAL fails on a disk that carries the game's compiled C: it holds 630 32-byte windows of the
-  cartridge, all from small tables in `src/` (the committed generated headers and const arrays). Until
-  the owner decides D-12, game disks stay private.
+* The game's compiled C holds some 32-byte windows of the cartridge, all from small tables committed in
+  `src/`. The owner allowed that on 2026-11-20 (D-12): A-LEGAL reports them and fails on anything else.
 * No display, sound or input yet (P6 to P9).
 * P2 (the timing bench), P3 (the memory manager) and P4 (the installer) are not done. P5 came first
   because it is the feasibility gate.
