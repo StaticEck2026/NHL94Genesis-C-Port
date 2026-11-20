@@ -275,7 +275,23 @@ static int sprite_boxes(int which)
     return tiles_changed;
 }
 
+static void draw_line_to(int y, const uint8_t *want, int cw, uint8_t *const *out, uint32_t off, int any_sprites);
 static void draw_line(int y, const uint8_t *want, int cw)
+{
+    int sprites = 0;
+    for (int i = 0; i < boxes[1] && !sprites; i++) sprites = y >= box[1][i].y && y < box[1][i].y + box[1][i].h;
+    draw_line_to(y, want, cw, draw.plane, (uint32_t)y * DRAW_STRIDE, sprites);
+}
+
+/* a whole line, composed eight pixels at a time, into six planes of the caller's (disp_obj.c's
+ * lines where the VDP's sprite limits apply) */
+void disp_planar_line(int y, uint8_t *const out[6])
+{
+    static const uint8_t all[40] = { 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 };
+    draw_line_to(y, all, disp.width / 8, out, 0, 1);
+}
+
+static void draw_line_to(int y, const uint8_t *want, int cw, uint8_t *const *out, uint32_t off, int any_sprites)
 {
     struct disp *d = &disp;
     int width = d->width, w0, w1, pw = d->plane_w, pmask = pw * 8 - 1, vmask = d->plane_h * 8 - 1;
@@ -284,10 +300,8 @@ static void draw_line(int y, const uint8_t *want, int cw)
     int slow = (d->reg[11] & 4) || (w0 == 0 && w1 > 0 && w1 < width && (hsa & 15));
     static struct layer s;
     static uint8_t any[40];
-    int sprites = 0;
-    for (int i = 0; i < boxes[1] && !sprites; i++) sprites = y >= box[1][i].y && y < box[1][i].y + box[1][i].h;
+    int sprites = any_sprites;
     if (sprites && !slow) sprites = sprite_line(y, &s, any);
-    uint32_t off = (uint32_t)y * DRAW_STRIDE;
     if (slow) {
         static uint8_t line[320];
         compose_line_slow(y, line);
@@ -296,7 +310,7 @@ static void draw_line(int y, const uint8_t *want, int cw)
             for (int k = 0; k < 6; k++) {
                 int b = 0;
                 for (int x = 0; x < 8; x++) b |= ((line[bx * 8 + x] >> k) & 1) << (7 - x);
-                draw.plane[k][off + (uint32_t)bx] = (uint8_t)b;
+                out[k][off + (uint32_t)bx] = (uint8_t)b;
             }
             draw.bytes_slow++;
         }
@@ -327,12 +341,12 @@ static void draw_line(int y, const uint8_t *want, int cw)
         m = a.o & ~a.pr & ~sel & 0xFF; take(&a, m, &c, &p4, &p5); sel |= m;
         m = b.o & ~b.pr & ~sel & 0xFF; take(&b, m, &c, &p4, &p5);
         if (!bx && lcb) c = p4 = p5 = 0;                  /* the left column blanked */
-        draw.plane[0][off + (uint32_t)bx] = (uint8_t)(c >> 24);
-        draw.plane[1][off + (uint32_t)bx] = (uint8_t)(c >> 16);
-        draw.plane[2][off + (uint32_t)bx] = (uint8_t)(c >> 8);
-        draw.plane[3][off + (uint32_t)bx] = (uint8_t)c;
-        draw.plane[4][off + (uint32_t)bx] = (uint8_t)p4;
-        draw.plane[5][off + (uint32_t)bx] = (uint8_t)p5;
+        out[0][off + (uint32_t)bx] = (uint8_t)(c >> 24);
+        out[1][off + (uint32_t)bx] = (uint8_t)(c >> 16);
+        out[2][off + (uint32_t)bx] = (uint8_t)(c >> 8);
+        out[3][off + (uint32_t)bx] = (uint8_t)c;
+        out[4][off + (uint32_t)bx] = (uint8_t)p4;
+        out[5][off + (uint32_t)bx] = (uint8_t)p5;
         draw.bytes_fast++;
     }
 }

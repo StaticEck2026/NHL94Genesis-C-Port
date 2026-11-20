@@ -332,6 +332,15 @@ void plat_frame_done(long frame)
         if (was_obj) { obj_leave(); draw_invalidate(); was_obj = 0; }
         draw_update();
     }
+    if (objmode && getenv("HALCHECK_DIFF") && atol(getenv("HALCHECK_DIFF")) == frame) {   /* (debugging: where the scene differs from the composer) */
+        static uint8_t ln[320];
+        int shown = 0;
+        for (int y = 0; y < 224 && shown < 12; y++) {
+            disp_compose_line(y, ln);
+            for (int x = 0; x < 256 && shown < 12; x++)
+                if (ln[x] != obj_pixel(x, y)) { printf("diff frame %ld at %d,%d: want %d, got %d (px0 %d py0 %d)\n", frame, x, y, ln[x], obj_pixel(x, y), obj.px0, obj.py0); shown++; }
+        }
+    }
     uint64_t hw = FNV0;
     for (int y = 0; y < 224; y++) {
         for (int x = 0; x < disp.width; x++) {

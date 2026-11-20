@@ -5,16 +5,19 @@
 #include <string.h>
 #include "disp_core.h"
 #include "disp_obj.h"
+#include "disp_draw.h"
 
 struct obj obj;
 #define SW 32                                             /* screen bytes a line (256 pixels) */
 #define SH 224
 #define MAXR 512
 struct rect { int16_t x, y, w, h; };                     /* pixels, in the buffers' coordinates (y wraps at 256) */
-static struct rect done[2][MAXR], chg[2][MAXR];
-static int ndone[2], nchg[2], full[2], active;
+static struct rect done[2][MAXR], chg[2][MAXR], adone[2][MAXR];
+static int ndone[2], nchg[2], nadone[2], full[2], active;
+static int a_ver, b_px0[2] = { -1, -1 }, b_py0[2], b_aver[2];   /* plane A's version, and what each buffer was drawn with */
 static uint8_t a_img[SH][6][SW], a_lo[SH][SW], a_hi[SH][SW];   /* plane A and the window on screen, with their opaque masks by priority */
 static int a_any_lo, a_any_hi;
+static int16_t a_row_lo[SH], a_row_hi[SH];               /* bytes of each line with something in the mask */
 static uint8_t rev[256];
 
 void obj_reset(uint8_t *rink, uint8_t *rink_hi, uint8_t *buf0, uint8_t *buf1)
@@ -139,6 +142,18 @@ static void op_recut(uint8_t *buf, const struct rect *r)
     }
 }
 
+static inline int tile_dirty_used(unsigned t) { t &= 0x7FF; return disp.tile_dirty[t >> 3] >> (t & 7) & 1; }
+
+/* a tile whose pixels changed and that some cell names */
+static int used_tiles_changed(void)
+{
+    for (int i = 0; i < DISP_TILES / 8; i++) {
+        unsigned m = disp.tile_dirty[i];
+        for (int j = 0; m; j++, m >>= 1) if ((m & 1) && disp.uses[i * 8 + j]) return 1;
+    }
+    return 0;
+}
+
 /* ---- plane A and the window, in screen coordinates -------------------------------------------- */
 
 static void window_span(int line, int *x0, int *x1)
@@ -151,35 +166,67 @@ static void window_span(int line, int *x0, int *x1)
     if (disp.reg[17] & 0x80) { *x0 = wx; *x1 = width; } else *x1 = wx;
 }
 
-static void a_layer(void)
+static int in_window(int cx, int cy)                     /* a screen cell is the window's (its rows and columns are whole cells) */
 {
-    a_any_lo = a_any_hi = 0;
-    for (int y = 0; y < SH; y++) {
-        int w0, w1;
-        window_span(y, &w0, &w1);
-        for (int bx = 0; bx < SW; bx++) {
-            int x = bx * 8;
-            unsigned e = (x >= w0 && x < w1) ? disp.cell[2][(y >> 3) * disp.win_w + bx] : disp.cell[0][(y >> 3) * 64 + bx];
-            uint8_t p6[6], m;
-            cell_row(e, y & 7, p6, &m);
-            for (int k = 0; k < 6; k++) a_img[y][k][bx] = p6[k];
-            a_hi[y][bx] = (e & 0x8000) ? m : 0;
-            a_lo[y][bx] = (e & 0x8000) ? 0 : m;
-            a_any_hi |= a_hi[y][bx];
-            a_any_lo |= a_lo[y][bx];
-        }
+    int w0, w1;
+    window_span(cy * 8, &w0, &w1);
+    return cx * 8 >= w0 && cx * 8 < w1;
+}
+
+/* one screen cell of plane A or the window into the A layer, and the rows' counts */
+static void a_cell(int cx, int cy, int win)
+{
+    unsigned e = win ? disp.cell[2][cy * disp.win_w + cx] : disp.cell[0][cy * 64 + cx];
+    for (int r = 0; r < 8; r++) {
+        int y = cy * 8 + r;
+        uint8_t p6[6], m;
+        cell_row(e, r, p6, &m);
+        for (int k = 0; k < 6; k++) a_img[y][k][cx] = p6[k];
+        uint8_t hi = (e & 0x8000) ? m : 0, lo = (e & 0x8000) ? 0 : m;
+        a_row_hi[y] = (int16_t)(a_row_hi[y] + (hi != 0) - (a_hi[y][cx] != 0));
+        a_row_lo[y] = (int16_t)(a_row_lo[y] + (lo != 0) - (a_lo[y][cx] != 0));
+        a_hi[y][cx] = hi;
+        a_lo[y][cx] = lo;
     }
 }
 
+static void a_flags(void)
+{
+    a_any_lo = a_any_hi = 0;
+    for (int y = 0; y < SH; y++) { a_any_lo |= a_row_lo[y]; a_any_hi |= a_row_hi[y]; }
+}
+
+static void a_layer(void)                                 /* all of it */
+{
+    for (int cy = 0; cy < SH / 8; cy++) for (int cx = 0; cx < SW; cx++) a_cell(cx, cy, in_window(cx, cy));
+    a_flags();
+}
+
+/* the cells of plane A and the window that were written or show a changed tile (the screen's
+ * part: A does not scroll in a scrolled scene) */
+static void a_changes(int tiles)
+{
+    int any = 0;
+    a_ver++;
+    for (int cy = 0; cy < SH / 8; cy++)
+        for (int cx = 0; cx < SW; cx++) {
+            int win = in_window(cx, cy), i = win ? cy * disp.win_w + cx : cy * 64 + cx, k = win ? 2 : 0;
+            if (!((disp.cell_dirty[k][i >> 3] >> (i & 7) & 1) || (tiles && tile_dirty_used(disp.cell[k][i])))) continue;
+            a_cell(cx, cy, win);
+            any = 1;
+        }
+    if (any) a_flags();
+}
+
 /* plane A's pixels of one priority into the buffer, by runs of bytes with something in them */
-static void op_a(uint8_t *buf, int b, uint8_t (*mask)[SW])
+static void op_a(uint8_t *buf, int b, uint8_t (*mask)[SW], const int16_t *rows)
 {
     for (int y = 0; y < SH; y++)
-        for (int bx = 0; bx < SW; bx++) {
+        for (int bx = 0; bx < SW && rows[y]; bx++) {
             if (!mask[y][bx]) continue;
             int run = bx;
             while (run < SW && mask[y][run]) run++;
-            add(done[b], &ndone[b], &full[b], obj.px0 + bx * 8, (obj.py0 + y) & 255, (run - bx) * 8 + 8, 1);
+            add(adone[b], &nadone[b], &full[b], obj.px0 + bx * 8, (obj.py0 + y) & 255, (run - bx) * 8 + 8, 1);
             for (int c = bx; c < run; c++) {
                 uint8_t p6[6];
                 for (int k = 0; k < 6; k++) p6[k] = a_img[y][k][c];
@@ -187,6 +234,25 @@ static void op_a(uint8_t *buf, int b, uint8_t (*mask)[SW])
             }
             bx = run;
         }
+}
+
+/* plane A's pixels of one priority again inside a rectangle of the screen (where something was
+ * restored or drawn over a plane A that stayed) */
+static void op_a_clip(uint8_t *buf, uint8_t (*mask)[SW], const int16_t *rows, int x, int y, int w, int h)
+{
+    int bx0 = x < 0 ? 0 : x >> 3, bx1 = (x + w - 1) >> 3, y1 = y + h;
+    if (bx1 >= SW) bx1 = SW - 1;
+    if (y < 0) y = 0;
+    if (y1 > SH) y1 = SH;
+    for (int l = y; l < y1; l++) {
+        if (!rows[l]) continue;
+        for (int c = bx0; c <= bx1; c++) {
+            if (!mask[l][c]) continue;
+            uint8_t p6[6];
+            for (int k = 0; k < 6; k++) p6[k] = a_img[l][k][c];
+            put8(buf, obj.px0 + c * 8, obj.py0 + l, p6, mask[l][c]);
+        }
+    }
 }
 
 /* ---- the sprites ------------------------------------------------------------------------------ */
@@ -266,15 +332,18 @@ int disp_compose_line(int line, uint8_t *out);           /* (disp_draw.c: colour
 
 static void cpu_compose(uint8_t *buf, int b, int y)
 {
-    static uint8_t line[320];
-    disp_compose_line(y, line);
-    int by = (obj.py0 + y) & 255;
-    for (int x = 0; x < 256; x++) {
-        int px = obj.px0 + x, bb = px >> 3, bit = 7 - (px & 7);
-        for (int k = 0; k < 6; k++) {
-            uint8_t *p = buf + by * OBJ_LS + k * OBJ_RW + bb;
-            *p = (uint8_t)((*p & ~(1 << bit)) | (((line[x] >> k) & 1) << bit));
-        }
+    static uint8_t lp[6][40];
+    uint8_t *const out[6] = { lp[0], lp[1], lp[2], lp[3], lp[4], lp[5] };
+    disp_planar_line(y, out);
+    int by = (obj.py0 + y) & 255, s0 = obj.px0 & 7, b0 = obj.px0 >> 3;
+    uint8_t *l = buf + by * OBJ_LS;
+    for (int k = 0; k < 6; k++) {
+        uint8_t *d = l + k * OBJ_RW + b0;
+        if (!s0) { memcpy(d, lp[k], SW); continue; }
+        uint8_t keep = (uint8_t)(0xFF << (8 - s0));        /* the first byte's pixels left of the picture */
+        d[0] = (uint8_t)((d[0] & keep) | (lp[k][0] >> s0));
+        for (int i = 1; i < SW; i++) d[i] = (uint8_t)(lp[k][i - 1] << (8 - s0) | lp[k][i] >> s0);
+        d[SW] = (uint8_t)((d[SW] & (0xFF >> s0)) | (uint8_t)(lp[k][SW - 1] << (8 - s0)));
     }
     add(done[b], &ndone[b], &full[b], obj.px0, by, 264, 1);
     obj.cpu_lines++;
@@ -282,24 +351,30 @@ static void cpu_compose(uint8_t *buf, int b, int y)
 
 /* ---- the update -------------------------------------------------------------------------------- */
 
-static int tile_dirty(unsigned t) { t &= 0x7FF; return disp.tile_dirty[t >> 3] >> (t & 7) & 1; }
-
 void obj_update(void)
 {
     struct disp *d = &disp;
     obj.updates++;
     int rebuild = !active || d->layout_dirty;
+    int tiles = !rebuild && d->any_tile_dirty && used_tiles_changed();
     if (rebuild) {
         for (int i = 0; i < 64 * 32; i++) rink_cell(i);
+        memset(a_row_lo, 0, sizeof a_row_lo);
+        memset(a_row_hi, 0, sizeof a_row_hi);
+        memset(a_lo, 0, sizeof a_lo);
+        memset(a_hi, 0, sizeof a_hi);
+        a_layer();
+        a_ver++;
         memcpy(obj.buf[0], obj.rink, OBJ_BYTES);
         memcpy(obj.buf[1], obj.rink, OBJ_BYTES);
-        ndone[0] = ndone[1] = nchg[0] = nchg[1] = full[0] = full[1] = 0;
+        ndone[0] = ndone[1] = nchg[0] = nchg[1] = nadone[0] = nadone[1] = full[0] = full[1] = 0;
         active = 1;
         obj.rebuilds++;
     } else {
-        /* the rink's cells that changed: written, or showing a tile whose pixels changed */
+        /* the rink's cells that changed: written (by the dirty bytes), or showing a tile whose pixels changed */
         for (int i = 0; i < 64 * 32; i++) {
-            int w = (d->any_cell_dirty && (d->cell_dirty[1][i >> 3] >> (i & 7) & 1)) || (d->any_tile_dirty && tile_dirty(d->cell[1][i]));
+            if (!tiles && !(i & 7) && !d->cell_dirty[1][i >> 3]) { i += 7; continue; }
+            int w = (d->cell_dirty[1][i >> 3] >> (i & 7) & 1) || (tiles && tile_dirty_used(d->cell[1][i]));
             if (!w) continue;
             rink_cell(i);
             int x = (i & 63) * 8, y = (i >> 6) * 8;
@@ -308,30 +383,58 @@ void obj_update(void)
                 if (x < 256) add(chg[b], &nchg[b], &full[b], x + 512, y, 8, 8);
             }
         }
+        if (d->any_cell_dirty || tiles) a_changes(tiles);
     }
-    a_layer();                                            /* (plane A and the window: drawn again each pass, for now) */
     int b = obj.shown ^ 1;
     uint8_t *buf = obj.buf[b];
+    obj.px0 = (512 - disp_hscroll(0, 1)) & 511;
+    obj.py0 = d->vs[1] & 255;
+    /* plane A stays in this buffer when the scroll and plane A are what they were when it was drawn:
+     * then it is drawn again only where something is restored or drawn over it */
+    int stay = !full[b] && b_px0[b] == obj.px0 && b_py0[b] == obj.py0 && b_aver[b] == a_ver;
+    static struct rect clip[2 * MAXR + 80];
+    int nclip = 0;
     /* restore what the objects covered in this buffer, and the rink's changes since it was drawn */
     if (full[b]) memcpy(buf, obj.rink, OBJ_BYTES);
     else {
         for (int i = 0; i < ndone[b]; i++) op_copy(buf, &done[b][i]);
         for (int i = 0; i < nchg[b]; i++) op_copy(buf, &chg[b][i]);
+        if (!stay) for (int i = 0; i < nadone[b]; i++) op_copy(buf, &adone[b][i]);
     }
+    if (stay) {                                           /* (the restored rectangles on the screen) */
+        for (int w = 0; w < 2; w++)
+            for (int i = 0; i < (w ? nchg[b] : ndone[b]); i++) {
+                const struct rect *r = w ? &chg[b][i] : &done[b][i];
+                int x0 = r->x & ~7, x1 = (r->x + r->w - 1) | 7;   /* (what the restore copied: whole bytes) */
+                struct rect c = { (int16_t)(x0 - obj.px0), (int16_t)((r->y - obj.py0) & 255), (int16_t)(x1 + 1 - x0), r->h };
+                if (c.x + c.w <= 0 || c.x >= 256) continue;
+                clip[nclip++] = c;
+                if (c.y + c.h > 256) { clip[nclip] = c; clip[nclip].y = (int16_t)(c.y - 256); nclip++; }   /* (wrapped round) */
+            }
+    } else nadone[b] = 0;
     ndone[b] = nchg[b] = full[b] = 0;
-    obj.px0 = (512 - disp_hscroll(0, 1)) & 511;
-    obj.py0 = d->vs[1] & 255;
     memset(cpu_line, 0, sizeof cpu_line);
     sprite_list();
+    if (stay)                                             /* (the sprites' areas as the recut over them reaches: whole bytes, and the shift) */
+        for (int i = 0; i < nsp; i++) { clip[nclip].x = (int16_t)(sp[i].x - 8); clip[nclip].y = (int16_t)sp[i].y; clip[nclip].w = (int16_t)(sp[i].w + 24); clip[nclip].h = (int16_t)sp[i].h; nclip++; }
     /* the painter's order: A low, sprites low, the rink's high pixels again, A high, sprites high */
-    if (a_any_lo) op_a(buf, b, a_lo);
+    if (a_any_lo) {
+        if (!stay) op_a(buf, b, a_lo, a_row_lo);
+        else for (int i = 0; i < nclip; i++) op_a_clip(buf, a_lo, a_row_lo, clip[i].x, clip[i].y, clip[i].w, clip[i].h);
+    }
     for (int i = nsp - 1; i >= 0; i--) if (!sp[i].pri) op_sprite(buf, b, &sp[i]);
     if (a_any_lo || nsp) {
-        for (int y = 0; y < SH; y++) {
-            int any = 0;
-            for (int bx = 0; bx < SW && !any; bx++) any = a_lo[y][bx];
-            if (any) { struct rect r = { (int16_t)obj.px0, (int16_t)((obj.py0 + y) & 255), 264, 1 }; op_recut(buf, &r); }
-        }
+        if (!stay) {
+            for (int y = 0; y < SH; y++)
+                if (a_row_lo[y]) { struct rect r = { (int16_t)obj.px0, (int16_t)((obj.py0 + y) & 255), 264, 1 }; op_recut(buf, &r); }
+        } else                                            /* (plane A low that stayed has its recut already; again only where it was redrawn) */
+            for (int i = 0; i < nclip; i++)
+                for (int y = clip[i].y < 0 ? 0 : clip[i].y; y < clip[i].y + clip[i].h && y < SH; y++)
+                    if (a_row_lo[y]) {
+                        int x0 = clip[i].x < 0 ? 0 : clip[i].x;
+                        struct rect r = { (int16_t)(obj.px0 + x0), (int16_t)((obj.py0 + y) & 255), (int16_t)(clip[i].x + clip[i].w - x0 + 8), 1 };
+                        op_recut(buf, &r);
+                    }
         for (int i = 0; i < nsp; i++)
             if (!sp[i].pri) {
                 int y0 = sp[i].y < 0 ? 0 : sp[i].y, y1 = sp[i].y + sp[i].h > SH ? SH : sp[i].y + sp[i].h;
@@ -339,16 +442,22 @@ void obj_update(void)
                 if (r.h > 0) op_recut(buf, &r);
             }
     }
-    if (a_any_hi) op_a(buf, b, a_hi);
+    if (a_any_hi) {
+        if (!stay) op_a(buf, b, a_hi, a_row_hi);
+        else for (int i = 0; i < nclip; i++) op_a_clip(buf, a_hi, a_row_hi, clip[i].x, clip[i].y, clip[i].w, clip[i].h);
+    }
     for (int i = nsp - 1; i >= 0; i--) if (sp[i].pri) op_sprite(buf, b, &sp[i]);
     for (int y = 0; y < SH; y++) if (cpu_line[y]) cpu_compose(buf, b, y);
+    b_px0[b] = obj.px0;
+    b_py0[b] = obj.py0;
+    b_aver[b] = a_ver;
     obj.shown = b;
     memset(d->tile_dirty, 0, sizeof d->tile_dirty);
     memset(d->cell_dirty, 0, sizeof d->cell_dirty);
     d->any_tile_dirty = d->any_cell_dirty = d->layout_dirty = d->sprites_dirty = d->scroll_dirty = 0;
 }
 
-void obj_leave(void) { active = 0; }
+void obj_leave(void) { active = 0; b_px0[0] = b_px0[1] = -1; }
 
 /* the shown window as six planes of 40 bytes a line (the 256 pixels at the left), for the planes'
  * hash both sides compute */
