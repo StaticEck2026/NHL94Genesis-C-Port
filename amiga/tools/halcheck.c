@@ -19,6 +19,7 @@
 #include "rosters.h"
 #include "hal_core.h"
 #include "hash.h"
+#include "intent.h"
 
 #define FNV0 0xCBF29CE484222325ull
 static uint64_t fnv(uint64_t h, const void *p, size_t n)
@@ -30,16 +31,24 @@ static uint64_t fnv(uint64_t h, const void *p, size_t n)
 
 static uint8_t vram[0x10000];
 static unsigned long n_words, n_block_words, n_bytes, n_fill, n_cram;   /* this frame's requests (HALCHECK_FRAMES) */
-void plat_vram_byte(uint16_t a, uint8_t b) { vram[a] = b; n_bytes++; }
+/* each request goes into the display intent hash (intent.h: the Amiga's reference, -i) and, for the
+ * golden check, into this side's copy of VRAM */
+void plat_vram_byte(uint16_t a, uint8_t b) { intent_byte(a, b); vram[a] = b; n_bytes++; }
 uint8_t plat_vram_read(uint16_t a) { return vram[a]; }
-void plat_vram_block(uint16_t a, const uint8_t *src, uint32_t words) { memcpy(vram + a, src, 2 * (size_t)words); n_block_words += words; }
-void plat_vram_word(uint16_t a, uint16_t w) { vram[a] = (uint8_t)(w >> 8); vram[(uint16_t)(a + 1)] = (uint8_t)w; n_words++; }
-void plat_vram_long(uint16_t a, uint32_t v) { for (int k = 0; k < 4; k++) vram[(uint16_t)(a + k)] = (uint8_t)(v >> (24 - 8 * k)); n_words += 2; }
-void plat_vram_fill(uint16_t a, uint8_t b, uint32_t n, uint8_t step) { n_fill += n; while (n--) { vram[a ^ 1] = b; a = (uint16_t)(a + step); } }
-void plat_cram(int i, uint16_t c) { (void)i; (void)c; n_cram++; }
+void plat_vram_block(uint16_t a, const uint8_t *src, uint32_t words) { intent_block(a, src, words); memcpy(vram + a, src, 2 * (size_t)words); n_block_words += words; }
+void plat_vram_word(uint16_t a, uint16_t w) { intent_word(a, w); vram[a] = (uint8_t)(w >> 8); vram[(uint16_t)(a + 1)] = (uint8_t)w; n_words++; }
+void plat_vram_long(uint16_t a, uint32_t v) { intent_long(a, v); for (int k = 0; k < 4; k++) vram[(uint16_t)(a + k)] = (uint8_t)(v >> (24 - 8 * k)); n_words += 2; }
+void plat_vram_fill(uint16_t a, uint8_t b, uint32_t n, uint8_t step) { intent_fill(a, b, n, step); n_fill += n; while (n--) { vram[a ^ 1] = b; a = (uint16_t)(a + step); } }
+void plat_vram_copy(uint16_t a, uint16_t src, uint32_t n, uint8_t step)
+{
+    intent_copy(a, src, n, step);
+    while (n--) { vram[a ^ 1] = vram[src ^ 1]; src++; a = (uint16_t)(a + step); }
+}
+void plat_cram(int i, uint16_t c) { intent_cram(i, c); n_cram++; }
+void plat_vsram(int i, uint16_t v) { intent_vsram(i, v); }
 static int lit_before;                                 /* palette entries not black when this frame began */
 static int saw_blank;                                  /* this frame: the display was switched off at some point */
-void plat_reg(int r, uint8_t v) { if (r == 1 && !(v & 0x40)) saw_blank = 1; }
+void plat_reg(int r, uint8_t v) { intent_reg(r, v); if (r == 1 && !(v & 0x40)) saw_blank = 1; }
 void plat_sound_command(const uint8_t *z) { (void)z; }
 void plat_sound_reset(int running) { (void)running; }
 void plat_sound_restart(const uint8_t *z) { (void)z; }
@@ -86,8 +95,8 @@ uint16_t plat_buttons(int pad, long h)
     return b;
 }
 
-static FILE *golden, *out;
-static long frames_wanted, checked, bad_ram, bad_vdp, first_bad = -1;
+static FILE *golden, *out, *intent_out;
+static long frames_wanted, checked, bad_ram, bad_vdp, first_bad = -1, intent_passes;
 static jmp_buf done;
 void plat_frame_done(long frame)
 {
@@ -119,6 +128,12 @@ void plat_frame_done(long frame)
         uint8_t be[4] = { (uint8_t)(h >> 24), (uint8_t)(h >> 16), (uint8_t)(h >> 8), (uint8_t)h };
         fwrite(be, 1, 4, out);
     }
+    uint32_t hi = intent_take();                          /* this pass's display requests (intent.h) */
+    if (intent_out) {
+        uint8_t be[4] = { (uint8_t)(hi >> 24), (uint8_t)(hi >> 16), (uint8_t)(hi >> 8), (uint8_t)hi };
+        fwrite(be, 1, 4, intent_out);
+    }
+    if (hi != INTENT_START) intent_passes++;
     char line[256];
     unsigned long long gr, gv;
     if (golden && fgets(line, sizeof line, golden) && sscanf(line, "%llx %llx", &gr, &gv) == 2) {
@@ -132,16 +147,21 @@ void plat_frame_done(long frame)
 int main(int argc, char **argv_in)
 {
     char **volatile argv = argv_in;
-    const char *outpath = NULL;
+    const char *volatile outpath = NULL, *volatile intentpath = NULL;
     volatile int nargs = argc;
-    if (nargs > 2 && !strcmp(argv[1], "-o")) { outpath = argv[2]; argv += 2; nargs -= 2; }
+    while (nargs > 2 && (!strcmp(argv[1], "-o") || !strcmp(argv[1], "-i"))) {
+        if (argv[1][1] == 'o') outpath = argv[2]; else intentpath = argv[2];
+        argv += 2;
+        nargs -= 2;
+    }
     argc = nargs;
-    if (argc < 4) { fprintf(stderr, "usage: halcheck [-o HASHES] ROM GOLDEN FRAMES [SCRIPT]\n"); return 2; }
+    if (argc < 4) { fprintf(stderr, "usage: halcheck [-o RAM_HASHES] [-i INTENT_HASHES] ROM GOLDEN FRAMES [SCRIPT]\n"); return 2; }
     if (!rom_load(argv[1])) { fprintf(stderr, "cannot load %s\n", argv[1]); return 2; }
     golden = fopen(argv[2], "r");
     frames_wanted = atol(argv[3]);
     if (argc > 4 && !load_script(argv[4])) return 2;
     if (outpath) out = fopen(outpath, "wb");
+    if (intentpath) intent_out = fopen(intentpath, "wb");
     memcpy(rules, rule_classic, sizeof rules);            /* (the vanilla game: native/vanilla/stubs.c) */
     rom_art = NULL;
     rom_limit = ROM_SIZE;
@@ -149,7 +169,8 @@ int main(int argc, char **argv_in)
     core_power_on(0);
     if (!setjmp(done)) run68k(Start);
     if (out) fclose(out);
-    printf("halcheck %s: %ld frames checked, RAM differs in %ld, VDP in %ld", argv[2], checked, bad_ram, bad_vdp);
+    if (intent_out) fclose(intent_out);
+    printf("halcheck %s: %ld frames checked, RAM differs in %ld, VDP in %ld; %ld passes with display requests", argv[2], checked, bad_ram, bad_vdp, intent_passes);
     if (first_bad >= 0) printf(", first at frame %ld", first_bad);
     printf(" (DMAs %u, fills %u, VRAM copies %u, VRAM reads %u, sound commands %u, restarts %u, other $96 %u)\n",
            core.dmas, core.fills, core.copies, core.vram_reads, core.commands, core.restarts, core.odd_targets);

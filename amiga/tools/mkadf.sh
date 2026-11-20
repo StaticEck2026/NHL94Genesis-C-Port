@@ -2,8 +2,9 @@
 # Build a bootable NHL94AGA ADF (880 KB DD, FFS, label NHL94AGA, a standard bootblock): the boot test
 # (NHL94AGA), the P5 verify program (NHL94VFY) with the repository's input scripts, amiga/disk/, and
 # amiga/CHANGELOG.md as Changelog.txt. No ROM bytes go on it (A-LEGAL, amiga/tools/noretail.py).
-# With REFS=DIR (amiga/tools/mkverify.sh), DIR/*.h32 go on as refs/: a PRIVATE disk, made from the ROM,
-# never published or committed. Usage: mkadf.sh BUILD_DIR VERSION OUT.adf
+# With REFS=DIR (amiga/tools/mkverify.sh), DIR/*.h32 go on as refs/ (REFEXT=i32: the display intent
+# hashes instead): a PRIVATE disk, made from the ROM, never published or committed.
+# Usage: mkadf.sh BUILD_DIR VERSION OUT.adf
 set -euo pipefail
 cd "$(dirname "$0")/.."
 B=$1 VERSION=$2 OUT=$3
@@ -27,7 +28,7 @@ cmds=(create + format NHL94AGA ffs + boot install
 for s in $SCRIPTS; do cmds+=(+ write "../tools/oracle/scripts/$s" "scripts/$s"); done
 if [ -n "${REFS:-}" ]; then
     cmds+=(+ makedir refs)
-    for r in "$REFS"/*.h32; do cmds+=(+ write "$r" "refs/$(basename "$r")"); done
+    for r in "$REFS"/*."${REFEXT:-h32}"; do cmds+=(+ write "$r" "refs/$(basename "$r")"); done
 fi
 xdftool "$OUT" "${cmds[@]}"
 sha256sum "$OUT"

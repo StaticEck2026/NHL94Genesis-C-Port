@@ -23,6 +23,7 @@
 #include "rosters.h"
 #include "hal_core.h"
 #include "hash.h"
+#include "intent.h"
 #include "prof.h"
 
 const char nhl94vfy_vertag[] __attribute__((used)) = "\0$VER: NHL94VFY " NHL94AGA_VERSION " (" NHL94AGA_DATE ") " NHL94AGA_COMMIT;
@@ -58,6 +59,7 @@ struct keep {
     ULONG loglen;
     ULONG eclock_hz;
     int only;                                   /* -1: every test */
+    int intent;                                 /* NHL94VFY <script> INTENT: check the display requests (A-DISPLAY-INTENT) */
     int profile, profiling;                     /* NHL94VFY <script> PROFILE [FIRST LAST]: asked for, and running */
     long prof_first, prof_last;                 /* the passes sampled (all of them when none are named) */
 };
@@ -100,6 +102,7 @@ static long script_len, frames_wanted, test_index;
 static const uint32_t *ref;
 static uint32_t *over;                           /* the passes longer than a frame: (frame, microseconds) pairs, for NAME.over */
 static long nover;
+static int intent_on;                            /* (K->intent, beside the hooks that test it for every word) */
 #define OVER_MAX 4096
 static uint32_t *made;                           /* (no reference on the disk: the hashes, written for the host to compare) */
 static ULONG ref_len, t_start;
@@ -134,7 +137,7 @@ void plat_frame_done(long frame)
             }
         }
     }
-    uint32_t h = ram_hash32((const uint8_t *)&g);
+    uint32_t h = intent_on ? intent_take() : ram_hash32((const uint8_t *)&g);
     if ((ULONG)frame <= ref_len && h != ref[frame - 1]) { if (!R->bad) R->first_bad = frame; R->bad++; }
     if (made && frame <= frames_wanted) made[frame - 1] = h;
     R->frames = frame;
@@ -145,14 +148,17 @@ void plat_frame_done(long frame)
     t_start = eclock();
 }
 
-void plat_vram_byte(uint16_t a, uint8_t b) { (void)a; (void)b; }
+/* the display requests: no backend yet (P6); with INTENT they go into the pass's hash (intent.h) */
+void plat_vram_byte(uint16_t a, uint8_t b) { if (intent_on) intent_byte(a, b); }
 uint8_t plat_vram_read(uint16_t a) { (void)a; return 0; }
-void plat_vram_block(uint16_t a, const uint8_t *src, uint32_t words) { (void)a; (void)src; (void)words; }
-void plat_vram_word(uint16_t a, uint16_t w) { (void)a; (void)w; }
-void plat_vram_long(uint16_t a, uint32_t v) { (void)a; (void)v; }
-void plat_vram_fill(uint16_t a, uint8_t b, uint32_t n, uint8_t step) { (void)a; (void)b; (void)n; (void)step; }
-void plat_cram(int i, uint16_t c) { (void)i; (void)c; }
-void plat_reg(int r, uint8_t v) { (void)r; (void)v; }
+void plat_vram_block(uint16_t a, const uint8_t *src, uint32_t words) { if (intent_on) intent_block(a, src, words); }
+void plat_vram_copy(uint16_t a, uint16_t src, uint32_t n, uint8_t step) { if (intent_on) intent_copy(a, src, n, step); }
+void plat_vsram(int i, uint16_t v) { if (intent_on) intent_vsram(i, v); }
+void plat_vram_word(uint16_t a, uint16_t w) { if (intent_on) intent_word(a, w); }
+void plat_vram_long(uint16_t a, uint32_t v) { if (intent_on) intent_long(a, v); }
+void plat_vram_fill(uint16_t a, uint8_t b, uint32_t n, uint8_t step) { if (intent_on) intent_fill(a, b, n, step); }
+void plat_cram(int i, uint16_t c) { if (intent_on) intent_cram(i, c); }
+void plat_reg(int r, uint8_t v) { if (intent_on) intent_reg(r, v); }
 void plat_sound_command(const uint8_t *z) { (void)z; }
 void plat_sound_restart(const uint8_t *z) { (void)z; }
 void plat_sound_reset(int running) { (void)running; }
@@ -216,11 +222,13 @@ static void run_one(void)
         if (!text || !parse_script(text)) { logf_("%s: cannot read %s\n", t->name, path); R->aborted = 3; return; }
         free(text);
     }
-    libc_format(path, sizeof path, "PROGDIR:refs/%s.h32", t->name);
+    const char *ext = K->intent ? "i32" : "h32";
+    libc_format(path, sizeof path, "PROGDIR:refs/%s.%s", t->name, ext);
     ref = libc_load(path, &n);
     ref_len = ref ? n / 4 : 0;
     made = ref ? NULL : malloc((size_t)t->frames * 4);
-    if (!ref) logf_("%s: no reference on this disk: its hashes go to PROGDIR:%s.h32 for amiga/tools/h32compare.py\n", t->name, t->name);
+    if (!ref) logf_("%s: no reference on this disk: its hashes go to PROGDIR:%s.%s for amiga/tools/h32compare.py\n", t->name, t->name, ext);
+    if (K->intent) logf_("%s: INTENT: the hashes are of the display requests, and the pass times include the hashing\n", t->name);
     over = K->profile ? NULL : malloc(OVER_MAX * 8);
     nover = 0;
     frames_wanted = t->frames;
@@ -230,6 +238,8 @@ static void run_one(void)
     rom_limit = ROM_SIZE;
     rosters_retail();
     core_power_on(0);
+    intent_on = K->intent;
+    intent_take();
     CALL(DOSBase, -198, REG(D1, 150));                    /* Delay(3 s): the floppy motor stops before Forbid */
     int profiling = K->profile && prof_start();
     K->profiling = profiling;
@@ -254,7 +264,7 @@ static void run_one(void)
         free(over);
     }
     if (made) {
-        libc_format(path, sizeof path, "PROGDIR:%s.h32", t->name);
+        libc_format(path, sizeof path, "PROGDIR:%s.%s", t->name, ext);
         if (!libc_save(path, made, (ULONG)R->frames * 4)) logf_("%s: cannot write %s\n", t->name, path);
         free(made);
         R->noref = 1;
@@ -346,6 +356,8 @@ LONG amiga_main(const char *args, LONG arglen)
     }
     K->prof_first = 1;
     K->prof_last = 0x7FFFFFFF;
+    for (LONG i = 0; i + 6 <= arglen; i++)
+        if (!memcmp(args + i, "INTENT", 6)) K->intent = 1;
     for (LONG i = 0; i + 7 <= arglen; i++) {
         if (memcmp(args + i, "PROFILE", 7)) continue;
         K->profile = 1;
@@ -381,8 +393,9 @@ LONG amiga_main(const char *args, LONG arglen)
             free(stack);
             long bad = 0, ran = 0, noref = 0;
             for (int i = 0; i < NTESTS; i++) { bad += K->r[i].bad; if (K->r[i].frames) ran++; noref += K->r[i].noref; }
-            if (noref) logf_("A-LOGIC: checked on the host (%ld scripts' hashes written beside the program)\n", noref);
-            else logf_("A-LOGIC: %s (%ld scripts, %ld differing frames)\n", bad || !ran ? "FAIL" : "PASS", ran, bad);
+            const char *gate = K->intent ? "A-DISPLAY-INTENT" : "A-LOGIC";
+            if (noref) logf_("%s: checked on the host (%ld scripts' hashes written beside the program)\n", gate, noref);
+            else logf_("%s: %s (%ld scripts, %ld differing %s)\n", gate, bad || !ran ? "FAIL" : "PASS", ran, bad, K->intent ? "passes" : "frames");
             rc = bad || !ran ? 10 : 0;
         }
         free((void *)K->rom);

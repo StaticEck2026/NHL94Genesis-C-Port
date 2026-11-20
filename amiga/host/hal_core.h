@@ -37,7 +37,10 @@ void plat_vram_block(uint16_t addr, const uint8_t *src, uint32_t words);   /* a 
 void plat_vram_word(uint16_t addr, uint16_t w);   /* one word to VRAM at an even address (high byte first) */
 void plat_vram_long(uint16_t addr, uint32_t v);   /* two words in a row at an even address (auto-increment 2) */
 void plat_vram_fill(uint16_t addr, uint8_t b, uint32_t n, uint8_t step);   /* a VRAM fill: byte k of n goes to (addr + k * step) ^ 1 */
-uint8_t plat_vram_read(uint16_t addr);            /* a VRAM byte back (VRAM copy and reads: counted) */
+void plat_vram_copy(uint16_t addr, uint16_t src, uint32_t n, uint8_t step);   /* a VRAM copy: byte k of n goes from (src + k) ^ 1 to
+                                                                              * (addr + k * step) ^ 1, in that order (they may overlap) */
+uint8_t plat_vram_read(uint16_t addr);            /* a VRAM byte back (a read of the data port: counted, never seen in a run) */
+void plat_vsram(int index, uint16_t v);           /* a vertical scroll entry (11 bits) */
 void plat_cram(int index, uint16_t colour);       /* a palette entry (9 bits, $0BGR) */
 void plat_reg(int r, uint8_t v);                  /* a VDP register */
 void plat_sound_command(const uint8_t *z80ram);   /* a command in Z80 RAM ($02-$22 and the patched bytes) */

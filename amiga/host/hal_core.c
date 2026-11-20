@@ -79,7 +79,11 @@ static void bus_write(uint16_t w)
         break;
     }
     case 0x05:                                            /* VSRAM: 40 words of 11 bits */
-        if ((c->addr & 0x7E) < 0x50) c->vsram[(c->addr & 0x7E) >> 1] = w & 0x07FF;
+        if ((c->addr & 0x7E) < 0x50) {
+            int i = (c->addr & 0x7E) >> 1;
+            c->vsram[i] = w & 0x07FF;
+            plat_vsram(i, c->vsram[i]);
+        }
         break;
     }
     c->addr = (uint16_t)(c->addr + c->reg[15]);
@@ -154,11 +158,8 @@ static void dma_copy(void)
     uint32_t n = dma_length();
     uint16_t src = (uint16_t)(core.reg[22] << 8 | core.reg[21]);
     core.copies++;
-    do {
-        plat_vram_byte(core.addr ^ 1, plat_vram_read(src ^ 1));
-        src++;
-        core.addr = (uint16_t)(core.addr + core.reg[15]);
-    } while (--n);
+    plat_vram_copy(core.addr, src, n, core.reg[15]);      /* one request: byte k goes from (src + k) ^ 1 to (addr + k * reg15) ^ 1 */
+    core.addr = (uint16_t)(core.addr + n * core.reg[15]);
     dma_end();
 }
 

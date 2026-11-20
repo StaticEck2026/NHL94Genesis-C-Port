@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # The PRIVATE P5 test disks, made from your own ROM (never published, never committed; *.adf is ignored):
-#   build/amiga/private/nhl94-aga-vX.Y.Z-private-verify.adf  the 0.5.0 disk plus refs/ (halcheck's hashes)
+#   build/amiga/private/nhl94-aga-vX.Y.Z-private-verify.adf  the public disk plus refs/*.h32 (halcheck's work RAM hashes: A-LOGIC)
+#   build/amiga/private/nhl94-aga-vX.Y.Z-private-intent.adf  the same with refs/*.i32 (the display requests' hashes:
+#                                                            A-DISPLAY-INTENT, run as NHL94VFY <script> INTENT)
 #   build/amiga/private/nhl94-rom-a.adf, nhl94-rom-b.adf     the ROM in two halves, volumes NHL94ROMA and
 #                                                            NHL94ROMB, for an A1200 with only floppies
 # Usage: mkverify.sh ROM BUILD_DIR VERSION  (run from amiga/, by make -C amiga verify-disks ROM=...)
@@ -12,6 +14,7 @@ mkdir -p "$P"
 [ -f ../out/golden/attract.golden ] || make -C .. golden
 (cd .. && amiga/tools/halcheck.sh "$ROM")
 REFS=../out/amiga/ref tools/mkadf.sh "$B" "$VERSION" "$P/nhl94-aga-v$VERSION-private-verify.adf"
+REFS=../out/amiga/ref REFEXT=i32 tools/mkadf.sh "$B" "$VERSION" "$P/nhl94-aga-v$VERSION-private-intent.adf"
 tmp=$(mktemp -d)
 trap 'rm -r "$tmp"' EXIT
 head -c 524288 "$ROM" > "$tmp/nhl94.rom.1"
