@@ -47,11 +47,20 @@ void core_power_on(int pal)
 
 int core_vdp_width(void) { return (core.reg[12] & 0x81) ? 320 : 256; }
 
+/* the write mode after code or fill changed, and a data word into the FIFO's history (the entry a read
+ * takes its undriven bits from is the oldest of the last four: hist_hi >> 16) */
+static inline void wmode_sync(void) { core.wmode = (uint8_t)((core.code & 0x0F) | (core.fill ? 0x80 : 0)); }
+static inline void hist_word(uint16_t w)
+{
+    core.hist_hi = core.hist_hi << 16 | core.hist_lo >> 16;
+    core.hist_lo = core.hist_lo << 16 | w;
+}
+#define FIFO_NEXT ((uint16_t)(core.hist_hi >> 16))
+
 static void bus_write(uint16_t w)
 {
     struct core *c = &core;
-    c->fifo[c->fifo_idx] = w;
-    c->fifo_idx = (uint8_t)((c->fifo_idx + 1) & 3);
+    hist_word(w);
     switch (c->code & 0x0F) {
     case 0x01:                                            /* VRAM: an odd address swaps the bytes */
         if (!(c->addr & 1)) {
@@ -121,10 +130,8 @@ static void dma_68k(void)
             if (words > (0x10000u - core.addr) / 2) words = (0x10000u - core.addr) / 2;   /* (VRAM wraps) */
             if (words) {
                 plat_vram_block(core.addr, p, words);
-                for (uint32_t k = words > 4 ? words - 4 : 0; k < words; k++) {          /* (the FIFO's last words) */
-                    core.fifo[core.fifo_idx] = (uint16_t)(p[2 * k] << 8 | p[2 * k + 1]);
-                    core.fifo_idx = (uint8_t)((core.fifo_idx + 1) & 3);
-                }
+                for (uint32_t k = words > 4 ? words - 4 : 0; k < words; k++)            /* (the FIFO's last words) */
+                    hist_word((uint16_t)(p[2 * k] << 8 | p[2 * k + 1]));
                 core.addr = (uint16_t)(core.addr + 2 * words);
                 src = (src + 2 * words) & 0x1FFFF;
                 n -= words;
@@ -176,6 +183,7 @@ static void ctrl16(uint16_t w)
         } else {
             core.pending = (core.reg[1] & 4) ? 1 : 0;
         }
+        wmode_sync();
         return;
     }
     core.pending = 0;
@@ -189,6 +197,7 @@ static void ctrl16(uint16_t w)
         default: dma_68k(); break;
         }
     }
+    wmode_sync();
 }
 
 static void data16(uint16_t w)
@@ -198,6 +207,7 @@ static void data16(uint16_t w)
     if (core.fill) {
         core.fill = 0;
         dma_fill(w);
+        wmode_sync();
     }
 }
 
@@ -220,21 +230,21 @@ void vdp_ctrl(uint32_t v)
             default: dma_68k(); break;
             }
         }
+        wmode_sync();
         return;
     }
     ctrl16((uint16_t)(v >> 16));
     ctrl16((uint16_t)v);
 }
 
-/* a data word: straight to the display backend when it is a VRAM write at an even address with no fill
- * waiting (name-table cells, tile words, the clears), otherwise the general path */
+/* a data word: straight to the display backend when it is a plain VRAM write at an even address
+ * (name-table cells, tile words, the clears), otherwise the general path */
 void vdp_data(uint16_t v)
 {
     struct core *c = &core;
-    if ((c->code & 0x0F) == 0x01 && !(c->addr & 1) && !c->fill) {
+    if (c->wmode == 1 && !(c->addr & 1)) {
         c->pending = 0;
-        c->fifo[c->fifo_idx] = v;
-        c->fifo_idx = (uint8_t)((c->fifo_idx + 1) & 3);
+        hist_word(v);
         plat_vram_word(c->addr, v);
         c->addr = (uint16_t)(c->addr + c->reg[15]);
         return;
@@ -245,16 +255,19 @@ void vdp_data(uint16_t v)
 void vdp_data32(uint32_t v)
 {
     struct core *c = &core;
-    if ((c->code & 0x0F) == 0x01 && !(c->addr & 1) && !c->fill && !(c->reg[15] & 1)) {
-        uint8_t i = c->fifo_idx;
+    if (c->wmode == 1 && !((c->addr | c->reg[15]) & 1)) {
         c->pending = 0;
-        c->fifo[i] = (uint16_t)(v >> 16);
-        c->fifo[(i + 1) & 3] = (uint16_t)v;
-        c->fifo_idx = (uint8_t)((i + 2) & 3);
-        plat_vram_word(c->addr, (uint16_t)(v >> 16));
-        c->addr = (uint16_t)(c->addr + c->reg[15]);
-        plat_vram_word(c->addr, (uint16_t)v);
-        c->addr = (uint16_t)(c->addr + c->reg[15]);
+        c->hist_hi = c->hist_lo;                          /* (two words into the history at once) */
+        c->hist_lo = v;
+        if (c->reg[15] == 2) {
+            plat_vram_long(c->addr, v);
+            c->addr = (uint16_t)(c->addr + 4);
+        } else {
+            plat_vram_word(c->addr, (uint16_t)(v >> 16));
+            c->addr = (uint16_t)(c->addr + c->reg[15]);
+            plat_vram_word(c->addr, (uint16_t)v);
+            c->addr = (uint16_t)(c->addr + c->reg[15]);
+        }
         return;
     }
     data16((uint16_t)(v >> 16));
@@ -275,11 +288,11 @@ uint16_t vdp_read(void)
     case 0x04: {
         int i = core.addr & 0x7E;
         if (i >= 0x50) i = 0;
-        w = (uint16_t)((core.vsram[i >> 1] & 0x07FF) | (core.fifo[core.fifo_idx] & ~0x07FF));
+        w = (uint16_t)((core.vsram[i >> 1] & 0x07FF) | (FIFO_NEXT & ~0x07FF));
         break;
     }
     case 0x08:
-        w = (uint16_t)(core.cram[(core.addr >> 1) & 0x3F] | (core.fifo[core.fifo_idx] & ~0x0EEE));
+        w = (uint16_t)(core.cram[(core.addr >> 1) & 0x3F] | (FIFO_NEXT & ~0x0EEE));
         break;
     }
     core.addr = (uint16_t)(core.addr + core.reg[15]);

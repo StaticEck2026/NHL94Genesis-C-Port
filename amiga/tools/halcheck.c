@@ -29,12 +29,14 @@ static uint64_t fnv(uint64_t h, const void *p, size_t n)
 }
 
 static uint8_t vram[0x10000];
-void plat_vram_byte(uint16_t a, uint8_t b) { vram[a] = b; }
+static unsigned long n_words, n_block_words, n_bytes, n_fill, n_cram;   /* this frame's requests (HALCHECK_FRAMES) */
+void plat_vram_byte(uint16_t a, uint8_t b) { vram[a] = b; n_bytes++; }
 uint8_t plat_vram_read(uint16_t a) { return vram[a]; }
-void plat_vram_block(uint16_t a, const uint8_t *src, uint32_t words) { memcpy(vram + a, src, 2 * (size_t)words); }
-void plat_vram_word(uint16_t a, uint16_t w) { vram[a] = (uint8_t)(w >> 8); vram[(uint16_t)(a + 1)] = (uint8_t)w; }
-void plat_vram_fill(uint16_t a, uint8_t b, uint32_t n, uint8_t step) { while (n--) { vram[a ^ 1] = b; a = (uint16_t)(a + step); } }
-void plat_cram(int i, uint16_t c) { (void)i; (void)c; }
+void plat_vram_block(uint16_t a, const uint8_t *src, uint32_t words) { memcpy(vram + a, src, 2 * (size_t)words); n_block_words += words; }
+void plat_vram_word(uint16_t a, uint16_t w) { vram[a] = (uint8_t)(w >> 8); vram[(uint16_t)(a + 1)] = (uint8_t)w; n_words++; }
+void plat_vram_long(uint16_t a, uint32_t v) { for (int k = 0; k < 4; k++) vram[(uint16_t)(a + k)] = (uint8_t)(v >> (24 - 8 * k)); n_words += 2; }
+void plat_vram_fill(uint16_t a, uint8_t b, uint32_t n, uint8_t step) { n_fill += n; while (n--) { vram[a ^ 1] = b; a = (uint16_t)(a + step); } }
+void plat_cram(int i, uint16_t c) { (void)i; (void)c; n_cram++; }
 void plat_reg(int r, uint8_t v) { (void)r; (void)v; }
 void plat_sound_command(const uint8_t *z) { (void)z; }
 void plat_sound_reset(int running) { (void)running; }
@@ -88,6 +90,17 @@ static jmp_buf done;
 void plat_frame_done(long frame)
 {
     static uint8_t ram[RAM_SIZE];
+    const char *want = getenv("HALCHECK_FRAMES");         /* "406,431,...": what those frames asked of the VDP */
+    if (want) {
+        char key[24];
+        snprintf(key, sizeof key, ",%ld,", frame);
+        static char list[4096];
+        if (!list[0]) snprintf(list, sizeof list, ",%s,", want);
+        if (strstr(list, key))
+            printf("frame %ld: %lu words by the data port, %lu words by DMA blocks, %lu bytes, %lu fill bytes, %lu palette writes, VBint $%06X\n",
+                   frame, n_words, n_block_words, n_bytes, n_fill, n_cram, (unsigned)g.VBint);
+    }
+    n_words = n_block_words = n_bytes = n_fill = n_cram = 0;
     ram_pack(ram);
     uint64_t hr = fnv(FNV0, ram, sizeof ram);
     uint64_t hv = fnv(fnv(fnv(fnv(FNV0, core.reg, 24), vram, sizeof vram), core.cram, sizeof core.cram), core.vsram, sizeof core.vsram);

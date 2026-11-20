@@ -140,6 +140,7 @@ void plat_vram_byte(uint16_t a, uint8_t b) { (void)a; (void)b; }
 uint8_t plat_vram_read(uint16_t a) { (void)a; return 0; }
 void plat_vram_block(uint16_t a, const uint8_t *src, uint32_t words) { (void)a; (void)src; (void)words; }
 void plat_vram_word(uint16_t a, uint16_t w) { (void)a; (void)w; }
+void plat_vram_long(uint16_t a, uint32_t v) { (void)a; (void)v; }
 void plat_vram_fill(uint16_t a, uint8_t b, uint32_t n, uint8_t step) { (void)a; (void)b; (void)n; (void)step; }
 void plat_cram(int i, uint16_t c) { (void)i; (void)c; }
 void plat_reg(int r, uint8_t v) { (void)r; (void)v; }
