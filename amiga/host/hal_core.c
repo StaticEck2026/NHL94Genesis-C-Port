@@ -1,0 +1,317 @@
+/* src/hal.h for the Amiga port: the game's hardware requests answered the way the reference host
+ * build answers them (native/hal_native.c over pulseman, in its golden-run mode), so that the same
+ * pad input gives the same work RAM after every pass (gate A-LOGIC, PROMPT.md 3.1).
+ *
+ * This file is portable C with no Amiga or host calls. It is linked into the Amiga program and into
+ * amiga/tools/halcheck (an x86 build that checks it against out/golden, frame by frame). What it
+ * keeps is only what the game reads back, or what the backends need to know about a request:
+ *
+ *   the VDP's request state: its 24 registers, the command latch (code, address, the half-written
+ *     flag), the palette (CRAM, which the game reads back for its fades), VSRAM and the last four
+ *     data words. VRAM bytes are handed to the display backend as the game writes them
+ *     (plat_vram_byte); nothing here draws or keeps a picture (PROMPT.md section 4);
+ *   the I/O chip's registers (pads through TH select, the 4 Way Play adaptor, the version byte);
+ *   the Z80's RAM as a mailbox: the bytes the game writes, its command marked done when the game
+ *     releases the bus (the sound backend's input, plat_sound_command). No Z80 code runs;
+ *   battery save RAM (8 KB, $FF at power on);
+ *   the 68000's interrupt mask;
+ *   the HV counter: the golden runs' stand-in (native/main.c golden_hv: 97 pixels on at each read
+ *     from the start of the frame's wait, in a 342 or 420 pixel line and a 262-line frame). It is the
+ *     game's random source (amiga/notes/hal_map.md, decision D-9). */
+#include <string.h>
+#include "game.h"
+#include "hal.h"
+#include "mem.h"
+#include "hal_core.h"
+
+struct core core;
+
+/* ---- power on (native_power_on, mdrt_vdp_init, mdrt_pads_init, mdrt_sram_init) ---------------- */
+
+void core_power_on(int pal)
+{
+    memset(&core, 0, sizeof core);
+    core.pal = pal ? 1 : 0;
+    core.sr = 0x2700;
+    core.io[0] = (uint8_t)(0x80 | (pal ? 0x40 : 0) | 0x20);   /* overseas, no expansion unit */
+    core.io[7] = 0xFF;
+    core.io[10] = 0xFF;
+    core.io[13] = 0xFB;
+    memset(core.sram, 0xFF, sizeof core.sram);
+    elapsed = 0;
+    assign_d2 = ASSIGN_D2_START;
+    le_player = le_attr = 0;
+}
+
+/* ---- the VDP's requests ---------------------------------------------------------------------- */
+
+int core_vdp_width(void) { return (core.reg[12] & 0x81) ? 320 : 256; }
+
+static void bus_write(uint16_t w)
+{
+    core.fifo[core.fifo_idx] = w;
+    core.fifo_idx = (uint8_t)((core.fifo_idx + 1) & 3);
+    switch (core.code & 0x0F) {
+    case 0x01: {                                          /* VRAM: an odd address swaps the bytes */
+        uint16_t a = core.addr & 0xFFFE;
+        if (core.addr & 1) w = (uint16_t)(w >> 8 | w << 8);
+        plat_vram_byte(a, (uint8_t)(w >> 8));
+        plat_vram_byte((uint16_t)(a + 1), (uint8_t)w);
+        break;
+    }
+    case 0x03: {                                          /* CRAM: 64 words of 9 bits */
+        int i = (core.addr >> 1) & 0x3F;
+        core.cram[i] = w & 0x0EEE;
+        plat_cram(i, core.cram[i]);
+        break;
+    }
+    case 0x05:                                            /* VSRAM: 40 words of 11 bits */
+        if ((core.addr & 0x7E) < 0x50) core.vsram[(core.addr & 0x7E) >> 1] = w & 0x07FF;
+        break;
+    }
+    core.addr = (uint16_t)(core.addr + core.reg[15]);
+}
+
+static uint32_t dma_length(void)
+{
+    uint32_t n = (uint32_t)(core.reg[20] << 8 | core.reg[19]);
+    return n ? n : 0x10000;
+}
+
+static void dma_end(void)
+{
+    uint16_t end = (uint16_t)(core.reg[21] + (core.reg[22] << 8) + core.reg[19] + (core.reg[20] << 8));
+    core.reg[21] = (uint8_t)end;
+    core.reg[22] = (uint8_t)(end >> 8);
+    core.reg[19] = core.reg[20] = 0;
+}
+
+/* a DMA from the 68000's memory: the words the game names, cartridge or work RAM */
+static void dma_68k(void)
+{
+    uint32_t n = dma_length();
+    uint32_t bank = (uint32_t)(core.reg[23] & 0x7F) << 17;
+    uint32_t src = (uint32_t)(core.reg[22] << 8 | core.reg[21]) << 1;
+    core.dmas++;
+    do {
+        uint16_t w = (uint16_t)(m8(bank | src) << 8 | m8(bank | (src + 1)));
+        src = (src + 2) & 0x1FFFF;
+        bus_write(w);
+    } while (--n);
+    dma_end();
+}
+
+static void dma_copy(void)
+{
+    if (!(core.code & 0x10)) return;
+    uint32_t n = dma_length();
+    uint16_t src = (uint16_t)(core.reg[22] << 8 | core.reg[21]);
+    core.copies++;
+    do {
+        plat_vram_byte(core.addr ^ 1, plat_vram_read(src ^ 1));
+        src++;
+        core.addr = (uint16_t)(core.addr + core.reg[15]);
+    } while (--n);
+    dma_end();
+}
+
+static void dma_fill(uint16_t w)
+{
+    uint32_t n = dma_length();
+    core.fills++;
+    if ((core.code & 0x0F) == 0x01) {
+        do {
+            plat_vram_byte(core.addr ^ 1, (uint8_t)(w >> 8));
+            core.addr = (uint16_t)(core.addr + core.reg[15]);
+        } while (--n);
+    }
+    dma_end();
+}
+
+static void ctrl16(uint16_t w)
+{
+    if (!core.pending) {
+        core.addr = (uint16_t)(core.addr_hi | (w & 0x3FFF));
+        core.code = (uint8_t)((core.code & 0x3C) | (w >> 14));
+        if ((w & 0xC000) == 0x8000) {
+            int r = (w >> 8) & 0x1F;
+            if (r < 24) { core.reg[r] = (uint8_t)w; plat_reg(r, (uint8_t)w); }
+        } else {
+            core.pending = (core.reg[1] & 4) ? 1 : 0;
+        }
+        return;
+    }
+    core.pending = 0;
+    core.addr_hi = (uint16_t)((w & 3) << 14);
+    core.addr = (uint16_t)(core.addr_hi | (core.addr & 0x3FFF));
+    core.code = (uint8_t)((core.code & 0x03) | ((w >> 2) & 0x3C));
+    if ((core.code & 0x20) && (core.reg[1] & 0x10)) {
+        switch (core.reg[23] >> 6) {
+        case 2: core.fill = 1; break;
+        case 3: dma_copy(); break;
+        default: dma_68k(); break;
+        }
+    }
+}
+
+static void data16(uint16_t w)
+{
+    core.pending = 0;
+    bus_write(w);
+    if (core.fill) {
+        core.fill = 0;
+        dma_fill(w);
+    }
+}
+
+void vdp_ctrl16(uint16_t v) { ctrl16(v); }
+void vdp_ctrl(uint32_t v) { ctrl16((uint16_t)(v >> 16)); ctrl16((uint16_t)v); }
+void vdp_data(uint16_t v) { data16(v); }
+void vdp_data32(uint32_t v) { data16((uint16_t)(v >> 16)); data16((uint16_t)v); }
+
+uint16_t vdp_read(void)
+{
+    uint16_t w = 0;
+    core.pending = 0;
+    switch (core.code & 0x1F) {
+    case 0x00: {
+        uint16_t a = core.addr & 0xFFFE;
+        w = (uint16_t)(plat_vram_read(a) << 8 | plat_vram_read((uint16_t)(a + 1)));
+        core.vram_reads++;
+        break;
+    }
+    case 0x04: {
+        int i = core.addr & 0x7E;
+        if (i >= 0x50) i = 0;
+        w = (uint16_t)((core.vsram[i >> 1] & 0x07FF) | (core.fifo[core.fifo_idx] & ~0x07FF));
+        break;
+    }
+    case 0x08:
+        w = (uint16_t)(core.cram[(core.addr >> 1) & 0x3F] | (core.fifo[core.fifo_idx] & ~0x0EEE));
+        break;
+    }
+    core.addr = (uint16_t)(core.addr + core.reg[15]);
+    return w;
+}
+
+uint16_t vdp_status(void)
+{
+    core.pending = 0;
+    uint16_t s = (uint16_t)(0x3400 | 0x0200 | core.pal);
+    if (core.vblank || !(core.reg[1] & 0x40)) s |= 0x0008;
+    return s;
+}
+
+/* the HV counter: the golden runs' stand-in (native/main.c golden_hv) */
+uint16_t vdp_hv16(void)
+{
+    uint32_t width = core_vdp_width() == 320 ? 420 : 342, lines = core.pal ? 313 : 262;
+    core.beam += 97;
+    uint32_t line = (224 + core.beam / width) % lines, h = core.beam % width;
+    return (uint16_t)((line & 0xFF) << 8 | (h >> 1));
+}
+uint8_t vdp_hv8(void) { return (uint8_t)(vdp_hv16() >> 8); }
+
+/* ---- the I/O chip: pads, the 4 Way Play adaptor, the version byte (mdrt pad.c) ---------------- */
+
+static int th(int port) { return (core.io[4 + port] & 0x40) ? (core.io[1 + port] >> 6) & 1 : 1; }
+
+static uint8_t lines3(uint16_t b, int t)
+{
+    uint8_t d = (uint8_t)((t << 6) | 0x3F);
+    if (t) return (uint8_t)(d & ~(b & 0x3F));                                /* ?1CBRLDU */
+    return (uint8_t)(d & ~(((b >> 2) & 0x30) | (b & 0x03) | 0x0C));          /* ?0SA00DU */
+}
+
+static uint8_t pad_lines(int port)
+{
+    int t = th(port);
+    if (core.four_way) {
+        if (port == 1) return 0x7F;
+        uint8_t sel = core.io[2] & core.io[5];
+        if (sel & 0x40) return (uint8_t)((t << 6) | 0x3C);
+        return lines3(core.buttons[(sel >> 4) & 3], t);
+    }
+    return lines3(core.buttons[port], t);
+}
+
+static uint8_t io_read(uint32_t addr)
+{
+    int r = (int)((addr & 0x1F) >> 1);
+    if (r >= 1 && r <= 3) {
+        uint8_t mask = (uint8_t)(0x80 | core.io[r + 3]);
+        uint8_t lines = r <= 2 ? pad_lines(r - 1) : 0x7F;
+        return (uint8_t)((core.io[r] & mask) | (lines & ~mask));
+    }
+    return core.io[r & 15];
+}
+
+uint8_t pad_read(uint32_t port) { return io_read(port); }
+void pad_write(uint32_t port, uint8_t v)
+{
+    int r = (int)((port & 0x1F) >> 1);
+    if (r == 0) return;
+    core.io[r & 15] = v;
+}
+static uint16_t io16(uint32_t addr) { uint8_t b = io_read(addr | 1); return (uint16_t)(b << 8 | b); }
+uint16_t io_read16(uint32_t addr) { return io16(addr); }
+uint32_t io_read32(uint32_t addr) { return (uint32_t)io16(addr) << 16 | io16(addr + 2); }
+void tmss_write(uint32_t v) { (void)v; }
+
+/* ---- the Z80's RAM, a mailbox ---------------------------------------------------------------- */
+
+void z80_busreq(uint16_t v)
+{
+    /* the bus given back with the relay's jump target ($96-$97) moved off its streaming loop ($7D):
+     * $D1 runs a command (the buffer at $02), $29 starts the relay again (and the PCM sample its
+     * pointers at $23-$28 name). The sound backend takes it, and the target is back at $7D, as the Z80
+     * leaves it when it is done (src/z80.c's header) */
+    if (v == 0 && core.z80_running && core.z80[0x97] == 0 && core.z80[0x96] != 0x7D) {
+        uint8_t what = core.z80[0x96];
+        if (what == 0xD1) { plat_sound_command(core.z80); core.commands++; }
+        else if (what == 0x29) { plat_sound_restart(core.z80); core.restarts++; }
+        else core.odd_targets++;
+        core.z80[0x96] = 0x7D;
+    }
+}
+uint8_t z80_busack(void) { return 0; }                    /* granted at once */
+void z80_reset(uint16_t v)
+{
+    core.z80_running = v != 0;
+    plat_sound_reset(core.z80_running);
+}
+uint8_t z80_ram_read8(uint16_t off) { return core.z80[off & 0x1FFF]; }
+void z80_ram_write8(uint16_t off, uint8_t v) { core.z80[off & 0x1FFF] = v; }
+void psg_write(uint8_t v) { plat_psg(v); }
+
+/* ---- save RAM: the bytes on the odd addresses ------------------------------------------------- */
+
+uint8_t sram_read8(uint32_t off) { uint32_t i = (off | 1) >> 1; return i < sizeof core.sram ? core.sram[i] : 0xFF; }
+void sram_write16(uint32_t off, uint16_t v)
+{
+    uint32_t i = (off | 1) >> 1;
+    if (i < sizeof core.sram) { core.sram[i] = (uint8_t)v; core.sram_dirty = 1; }
+}
+
+/* ---- the interrupt mask ---------------------------------------------------------------------- */
+
+uint16_t cpu_get_sr(void) { return core.sr; }
+void cpu_set_sr(uint16_t sr) { core.sr = sr; }
+
+/* ---- the frame's end (hal_native.c vblank, mdrt_wait_vblank) ---------------------------------- */
+
+void hal_wait_vblank(void)
+{
+    core.frames++;
+    plat_frame_done(core.frames);                         /* the pass is over: hash, pace, present */
+    core.beam = 0;                                        /* (the beam starts again at the handshake) */
+    for (int p = 0; p < 4; p++) core.buttons[p] = plat_buttons(p, core.handshakes);
+    core.handshakes++;
+    core.vblank = 1;
+    if (core.reg[1] & 0x20) {                             /* the vblank interrupt */
+        core.in_vblank = 1;
+        call68k(g.VBint);
+        core.in_vblank = 0;
+    }
+    core.vblank = 0;
+}

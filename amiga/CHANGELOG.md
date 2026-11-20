@@ -28,6 +28,48 @@ Gates passed on a stock A1200 (machine, Kickstart): A-...
 Tested by, on: <date>, <log name>
 ```
 
+## 0.5.0 (2026-11-20), phase P5: the game's logic on the A1200
+
+ADFs: `nhl94-aga-v0.5.0-private-verify.adf` with `nhl94-rom-a.adf` and `nhl94-rom-b.adf`. These are
+private test disks for the owner of the ROM; they are not a release. Test sheet: amiga/tests/v0.5.0.md.
+The public `nhl94-aga-v0.5.0.adf` is held back: it fails A-LEGAL (see Known issues).
+
+Added:
+* `NHL94VFY` (68020, about 290 KB): the game's whole C (`src/`, without the Z80 relay), compiled for the
+  68020 with `amiga/host/hal_core.c` behind `src/hal.h`, with no display or sound yet. It:
+  * plays the repository's seven boot-based input scripts;
+  * checks work RAM after every pass against the reference hashes (gate A-LOGIC);
+  * times every pass with the E clock (the feasibility measurement, PROMPT.md 6.5);
+  * powers the game on again between scripts by restoring its data and clearing its BSS;
+  * reads the ROM from one file or from two floppy halves, and checks its CRC32;
+  * logs to the Shell, the serial port (9600 baud) and `NHL94VFY.log`.
+* `hal_core.c` answers the game's hardware requests as the reference host build does in its golden runs:
+  * the VDP's request state: registers, the command latch, DMA, fill and copy, the palette, VSRAM;
+  * the I/O chip: 3-button pads, the 4 Way Play adaptor, the version byte;
+  * the Z80's RAM as a mailbox, so no Z80 code runs;
+  * save RAM;
+  * the golden runs' stand-in for the HV counter, which is the game's random source (D-9).
+* On the host, `amiga/tools/halcheck` checks it against every vanilla golden run. All 69,293 frames of
+  the seven runs match, work RAM and VDP state both.
+* `setjmp`/`longjmp`, a 64 KB stack through `StackSwap`, and a small C library over dos.library and
+  exec (`amiga/host/libc_amiga.c`).
+
+Changed:
+* The boot disk's `Startup-Sequence` runs `NHL94VFY`. `NHL94AGA` (the 0.1.0 boot test) is still on the
+  disk.
+
+Known issues:
+* A-LEGAL fails on a disk that carries the game's compiled C: it holds 630 32-byte windows of the
+  cartridge, all from small tables in `src/` (the committed generated headers and const arrays). Until
+  the owner decides D-12, game disks stay private.
+* No display, sound or input yet (P6 to P9).
+* P2 (the timing bench), P3 (the memory manager) and P4 (the installer) are not done. P5 came first
+  because it is the feasibility gate.
+
+Gates passed on the host: the cross build (`-Werror`; two `src/`-only warnings kept as warnings,
+STATUS.md), and halcheck on 7 of 7 runs. Gates on a stock A1200: waiting for the test sheet (A-LOGIC
+and the pass times).
+
 ## 0.1.0 (2026-11-20), phase P1: toolchain and boot
 
 ADF: nhl94-aga-v0.1.0.adf. This is a boot and takeover test with no game yet. Its test sheet is

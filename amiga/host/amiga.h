@@ -97,6 +97,7 @@ enum { D0, D1, D2, D3, A0, A1, A2, A3 };
 /* dos.library */
 #define LVO_Open   (-30)
 #define LVO_Close  (-36)
+#define LVO_Read   (-42)
 #define LVO_Write  (-48)
 #define LVO_Output (-60)
 #define MODE_NEWFILE 1006
