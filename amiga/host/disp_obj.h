@@ -1,4 +1,4 @@
-/* amiga/host/disp_obj.c: the scrolled scene (amiga/notes/p7_design.md). When the picture is 256 wide,
+/* amiga/host/disp_obj.c: the scrolled scene (amiga/notes/p7_design.md). When the picture is 256 or 320 wide,
  * plane B scrolls as one piece and plane A does not scroll (the match), plane B is drawn once into
  * its own planar bitmap (the rink bitmap: the plane's 512 pixels and its first 256 again, 256 lines,
  * six planes interleaved a line) and the picture is two display buffers made from it, shown in turn
@@ -8,11 +8,11 @@
 #pragma once
 #include <stdint.h>
 
-#define OBJ_RW 96                                         /* bytes a plane line of the rink bitmaps (768 pixels) */
+#define OBJ_RW 104                                        /* bytes a plane line of the rink bitmaps (832 pixels: the plane's 512 and 320 again) */
 #define OBJ_RH 256
 #define OBJ_LS (OBJ_RW * 6)                               /* bytes a line: six planes interleaved */
 #define OBJ_BYTES (OBJ_LS * OBJ_RH)
-#define OBJ_CHIP_BYTES (4 * OBJ_BYTES + 3 * 34 * 6 * 224 + 2 * 64 * 6 * 32 * 6)   /* everything the blitter reads or writes */
+#define OBJ_CHIP_BYTES (4 * OBJ_BYTES + 3 * 42 * 6 * 224 + 2 * 64 * 6 * 32 * 6)   /* everything the blitter reads or writes */
 struct obj {
     uint8_t *rink, *rink_hi, *buf[2];                     /* in the platform's block (Chip RAM on the Amiga); rink_hi: the mask, repeated a plane row */
     int shown;                                            /* the buffer to show after obj_update */

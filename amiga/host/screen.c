@@ -87,12 +87,17 @@ void screen_prepare_obj(const UBYTE *buf, int px0, int py0)
     const struct disp *d = &disp;
     UWORD *c = cop[cop_next];
     int on = d->reg[1] & 0x40, vstart = screen_pal ? 0x3C : 0x20;
+    int w320 = d->width == 320, hstart = w320 ? 0x81 : 0xA1;
 #if OBJ_FMODE3
-    int F = ((px0 + 31) >> 6) << 6, delay = F + 32 - px0;  /* the first pixel fetched (a 64-bit boundary), and the delay (0-63) */
+    /* 256 pixels: fetched from $38 (6 fetches), the picture 32 pixels in; 320 pixels: from $18 (7
+     * fetches), the picture 64 pixels in (the plane pointer may then sit a unit before the line: the
+     * pixels fetched there are left of the window) */
+    int lead = w320 ? 64 : 32;
+    int F = w320 ? (((px0 + 63) >> 6) << 6) - 64 : ((px0 + 31) >> 6) << 6, delay = F + lead - px0;   /* the first pixel fetched (a 64-bit boundary), the delay (0-63) */
     UWORD con1 = (UWORD)((delay & 15) | (delay & 15) << 4 | ((delay >> 4) & 3) << 10 | ((delay >> 4) & 3) << 14);
-    int first = F >> 3, fetched = 48;
+    int first = F >> 3, fetched = w320 ? 56 : 48;
     c = mv(c, FMODE, 3);
-    c = mv(c, DDFSTRT, 0x38);
+    c = mv(c, DDFSTRT, w320 ? 0x18 : 0x38);
     c = mv(c, DDFSTOP, 0xD0);
 #else
     int f = px0 & 15;
@@ -107,8 +112,8 @@ void screen_prepare_obj(const UBYTE *buf, int px0, int py0)
     c = mv(c, BPLCON1, con1);
     c = mv(c, BPLCON2, BPLCON2_KILLEHB);
     c = mv(c, BPLCON4, 0x0011);
-    c = mv(c, DIWSTRT, (UWORD)(vstart << 8 | 0xA1));
-    c = mv(c, DIWSTOP, (UWORD)(((vstart + 224) & 0xFF) << 8 | ((0xA1 + 256) & 0xFF)));
+    c = mv(c, DIWSTRT, (UWORD)(vstart << 8 | hstart));
+    c = mv(c, DIWSTOP, (UWORD)(((vstart + 224) & 0xFF) << 8 | ((hstart + d->width) & 0xFF)));
     c = mv(c, BPL1MOD, (UWORD)(OBJ_LS - fetched));
     c = mv(c, BPL2MOD, (UWORD)(OBJ_LS - fetched));
     c = plane_ptrs(c, buf + py0 * OBJ_LS + first, OBJ_RW);

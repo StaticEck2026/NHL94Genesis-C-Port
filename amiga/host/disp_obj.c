@@ -11,9 +11,10 @@
 #include "blit.h"
 
 struct obj obj;
-#define SW 32                                             /* screen bytes a line (256 pixels) */
+#define SWMAX 40                                          /* screen bytes a line at most (320 pixels) */
+static int SW = 32, WPX = 256;                            /* this picture's: bytes a line and pixels (256 or 320) */
 #define SH 224
-#define AW 34                                             /* bytes a plane row of the plane A images: 256 pixels and a spare word */
+#define AW 42                                             /* bytes a plane row of the plane A images: up to 320 pixels and a spare word */
 #define SPW 6                                             /* bytes a plane row of a sprite image: up to 32 pixels and a spare word */
 #define SPR_BYTES (SPW * 32 * 6)
 #define NSPR 64
@@ -23,7 +24,7 @@ static struct rect done[2][MAXR], chg[2][MAXR], adone[2][MAXR];
 static int ndone[2], nchg[2], nadone[2], full[2], active;
 static int a_ver, b_px0[2] = { -1, -1 }, b_py0[2], b_aver[2];   /* plane A's version, and what each buffer was drawn with */
 static uint8_t *a_img, *a_lo_m, *a_hi_m;                 /* plane A and the window on screen: six interleaved planes, and the masks by priority (repeated a plane row) */
-static uint8_t a_lo[SH][SW], a_hi[SH][SW];               /* the masks again, a byte a cell row, for the CPU */
+static uint8_t a_lo[SH][SWMAX], a_hi[SH][SWMAX];               /* the masks again, a byte a cell row, for the CPU */
 static int16_t a_row_lo[SH], a_row_hi[SH];               /* bytes of each line with something in the mask */
 static uint8_t *spr_img, *spr_mask;                       /* the sprite images, NSPR of them by link number */
 static struct { uint16_t e; uint8_t size, valid; } spr_key[NSPR];
@@ -56,7 +57,7 @@ void obj_reset(uint8_t *chip)
 int obj_scene(void)
 {
     const struct disp *d = &disp;
-    if (d->width != 256 || (d->reg[11] & 7) || d->plane_w != 64 || d->plane_h != 32 || d->vs[0]) return 0;
+    if ((d->width != 256 && d->width != 320) || (d->reg[11] & 7) || d->plane_w != 64 || d->plane_h != 32 || d->vs[0]) return 0;
     if (disp_hscroll(0, 0)) return 0;
     if (d->reg[0] & 0x20) return 0;                       /* (the left column blanked: not in a match) */
     return 1;
@@ -102,7 +103,7 @@ static void rink_cell(int i)
             if (bx >= OBJ_RW) break;
             uint8_t *l = obj.rink + y * OBJ_LS + bx, *h = obj.rink_hi + y * OBJ_LS + bx;
             for (int k = 0; k < 6; k++) { l[k * OBJ_RW] = p6[k]; h[k * OBJ_RW] = hi; }
-            if (cx >= 32) break;                          /* (only the first 32 columns are repeated) */
+            if (cx >= 40) break;                          /* (the first 40 columns are repeated: the widest picture) */
         }
     }
 }
@@ -289,7 +290,7 @@ static uint8_t cpu_line[SH];
 /* the sprites in link order, and the lines the VDP's limits change (those are composed by the CPU) */
 static void sprite_list(void)
 {
-    int total = 64, per_line = 16, link = 0, seen = 0;
+    int h40 = WPX == 320, total = h40 ? 80 : 64, per_line = h40 ? 20 : 16, link = 0, seen = 0;
     static int16_t count[SH], dots[SH];
     memset(count, 0, sizeof count);
     memset(dots, 0, sizeof dots);
@@ -302,9 +303,9 @@ static void sprite_list(void)
         for (int l = y < 0 ? 0 : y; l < y + sh * 8 && l < SH; l++) {
             count[l]++;
             dots[l] = (int16_t)(dots[l] + sw * 8);
-            if (count[l] > per_line || dots[l] > 256 || (rawx == 0 && count[l] > 1)) cpu_line[l] = 1;
+            if (count[l] > per_line || dots[l] > WPX || (rawx == 0 && count[l] > 1)) cpu_line[l] = 1;
         }
-        if (y < SH && y + sh * 8 > 0 && x < 256 && x + sw * 8 > 0) {
+        if (y < SH && y + sh * 8 > 0 && x < WPX && x + sw * 8 > 0) {
             sp[nsp].x = x; sp[nsp].y = y; sp[nsp].w = sw * 8; sp[nsp].h = sh * 8;
             sp[nsp].pri = (e >> 15) & 1; sp[nsp].e = e; sp[nsp].link = link;
             nsp++;
@@ -397,9 +398,9 @@ static void op_sprite_cpu(uint8_t *buf, int b, const struct spr *s)
             uint8_t p6[6], m;
             cell_row(e, row & 7, p6, &m);
             int x = s->x + tx * 8;
-            if (x <= -8 || x >= 256) continue;
+            if (x <= -8 || x >= WPX) continue;
             if (x < 0) { m = (uint8_t)(m & (0xFF >> -x)); }
-            if (x + 8 > 256) m = (uint8_t)(m & (0xFF << (x + 8 - 256)));
+            if (x + 8 > WPX) m = (uint8_t)(m & (0xFF << (x + 8 - WPX)));
             put8(buf, obj.px0 + x, obj.py0 + y, p6, m);
         }
     }
@@ -444,7 +445,7 @@ static void cpu_compose(uint8_t *buf, int b, int y)
         for (int i = 1; i < SW; i++) d[i] = (uint8_t)(lp[k][i - 1] << (8 - s0) | lp[k][i] >> s0);
         d[SW] = (uint8_t)((d[SW] & (0xFF >> s0)) | (uint8_t)(lp[k][SW - 1] << (8 - s0)));
     }
-    add(done[b], &ndone[b], &full[b], obj.px0, by, 264, 1);
+    add(done[b], &ndone[b], &full[b], obj.px0, by, WPX + 8, 1);
     obj.cpu_lines++;
 }
 
@@ -462,6 +463,8 @@ void obj_update(void)
 {
     struct disp *d = &disp;
     obj.updates++;
+    SW = d->width / 8;
+    WPX = d->width;
     int rebuild = !active || d->layout_dirty;
     int tiles = !rebuild && d->any_tile_dirty && used_tiles_changed();
     if (rebuild) {
@@ -490,7 +493,7 @@ void obj_update(void)
             int x = (i & 63) * 8, y = (i >> 6) * 8;
             for (int b = 0; b < 2; b++) {
                 add(chg[b], &nchg[b], &full[b], x, y, 8, 8);
-                if (x < 256) add(chg[b], &nchg[b], &full[b], x + 512, y, 8, 8);
+                if (x < 320) add(chg[b], &nchg[b], &full[b], x + 512, y, 8, 8);
             }
         }
         if (d->plane_dirty[0] || d->plane_dirty[2] || tiles) a_changes(tiles);
@@ -539,7 +542,7 @@ void obj_update(void)
         if (!rows[y] || !a_row_lo[y]) continue;
         int y1 = y;
         while (y1 < SH && rows[y1] && a_row_lo[y1]) y1++;
-        op_recut(buf, obj.px0, obj.py0 + y, 272, y1 - y);
+        op_recut(buf, obj.px0, obj.py0 + y, WPX + 16, y1 - y);
         y = y1;
     }
     op_a(buf, b, a_hi_m, a_row_hi, rows);
@@ -562,8 +565,8 @@ void obj_update(void)
 
 void obj_leave(void) { active = 0; b_px0[0] = b_px0[1] = -1; }
 
-/* the shown window as six planes of 40 bytes a line (the 256 pixels at the left), for the planes'
- * hash both sides compute */
+/* the shown window as six planes of 40 bytes a line (a 256-pixel picture at the left), for the
+ * planes' hash both sides compute */
 void obj_window(uint8_t *const planes[6])
 {
     blit_wait();
