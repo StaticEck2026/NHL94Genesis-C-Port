@@ -430,8 +430,10 @@ decides the `CORE` resident set and each overlay's set. The goal is not to keep 
 * **File name**: `nhl94-aga-vX.Y.Z.adf`. The disk label is `NHL94AGA`. The `$VER:` string is
   `$VER: NHL94AGA X.Y.Z (DD.MM.YYYY)`, AmigaOS's date form.
 * **Every ADF** gets:
-  * an entry in [CHANGELOG.md](CHANGELOG.md) (added, changed, fixed, known issues, gates passed, SHA-256
-    of the ADF), copied onto the disk as `Changelog.txt`;
+  * an entry in [CHANGELOG.md](CHANGELOG.md) (added, changed, fixed, known issues, gates passed),
+    copied onto the disk as `Changelog.txt`. The ADF's SHA-256 goes in STATUS.md's ADF index and in
+    the release notes, since an entry on the disk cannot hold its own disk's checksum (amended
+    2026-11-20, recorded in STATUS.md);
   * a state record in [STATUS.md](STATUS.md) (section 9);
   * a hardware test record (machine, Kickstart, RAM, monitor, controllers, result, the log file).
 * ADFs are built into `build/amiga/` (ignored by git) and published as release assets with the

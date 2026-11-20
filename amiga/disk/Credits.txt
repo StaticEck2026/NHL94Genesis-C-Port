@@ -1,0 +1,14 @@
+NHL94AGA - a native Amiga 1200 (AGA) port of NHL '94
+
+Credits: built on NHL94Genesis (https://github.com/abdulahmad/NHL94Genesis) by abdulahmad, with
+chaos, StaticEck, McMarkis (Mhopkinsinc) and Drezz, and special thanks to smozoma and kingraph.
+The C, its runtime (pulseman) and its verification tools are by 1nput
+(ninety-four, https://github.com/1nputs/ninety-four, MIT).
+
+This port is built on the community's byte-matching disassembly NHL94Genesis by abdulahmad: every
+routine, RAM and file name comes from it. Anyone building on it (a mod, hack, port, fork or
+release) must carry this credit, near the top of their README and in the notes of every release
+and any text file shipped in a release archive.
+
+NHL '94 is EA's. This disk holds none of the cartridge's code or data: the game needs your own dump
+of the 1 MB US/Europe cartridge, which the installer (from version 0.4.0) converts on your Amiga.

@@ -1,0 +1,9 @@
+NHL94AGA - native Amiga 1200 AGA port of NHL '94 (see Credits.txt)
+
+Needs: Kickstart 3.0 or newer, a 68020 or better, the AGA chipset (Amiga 1200, 4000, CD32
+hardware). A stock A1200 (2 MB Chip RAM, no Fast RAM) is the machine it is built for.
+
+Boot this disk, or run DF0:NHL94AGA from your own Shell or Workbench. The program checks the
+machine, takes it over the way the Amiga's own libraries allow, and gives it back when you press
+the left mouse button or a fire button. Its log goes to NHL94AGA.log on this disk (or RAM:
+when the disk is write-protected). Changelog.txt says what each version does and how to test it.
