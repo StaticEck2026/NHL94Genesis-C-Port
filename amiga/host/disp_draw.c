@@ -372,8 +372,16 @@ void draw_update(void)
     draw.updates++;
     /* the scroll: the lines whose scroll changed since they were drawn (a vertical scroll moves them all) */
     if (!all && d->scroll_dirty) {
-        if (d->vs[0] != last_vs[0] || d->vs[1] != last_vs[1]) all = 1;
-        else
+        if (d->vs[1] != last_vs[1]) all = 1;
+        else if (d->vs[0] != last_vs[0]) {                /* plane A moved: the lines where the window does not cover it (the title's credits) */
+            for (int y = 0; y < DRAW_LINES; y++) {
+                int w0, w1;
+                window_span(y, &w0, &w1);
+                if (!(w0 == 0 && w1 >= d->width)) mark_span(y, 0, d->width);
+            }
+            for (int y = 0; y < DRAW_LINES; y++)          /* (and any line whose horizontal scroll changed) */
+                if (disp_hscroll(y, 0) != last_hs[y][0] || disp_hscroll(y, 1) != last_hs[y][1]) mark_span(y, 0, d->width);
+        } else
             for (int y = 0; y < DRAW_LINES; y++)
                 if (disp_hscroll(y, 0) != last_hs[y][0] || disp_hscroll(y, 1) != last_hs[y][1]) mark_span(y, 0, d->width);
     }

@@ -311,7 +311,7 @@ static void run_one(void)
     rom_art = NULL;
     rom_limit = ROM_SIZE;
     rosters_retail();
-    core_power_on(0);
+    core_power_on(K->play && K->pal);                     /* (PLAY PAL: a PAL console, 50 passes a second; the checks are NTSC's) */
     intent_on = K->intent;
     intent_take();
     if (K->play) {                                        /* the save RAM: records and playoffs, kept beside the program (P10) */
