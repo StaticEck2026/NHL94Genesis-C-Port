@@ -75,6 +75,11 @@ show_handler:
 	btst	#5,%d0				/* VERTB */
 	beq.s	.Lsdone
 	addq.l	#1,vb_count
+	move.w	0x4(%a0),%d1			/* the beam's line now (VPOSR's V8-V10, VHPOSR's V0-V7): where this vblank began */
+	and.w	#7,%d1
+	lsl.w	#8,%d1
+	move.b	0x6(%a0),%d1
+	move.w	%d1,vb_vpos
 	move.w	#0x0020,0x9c(%a0)
 	move.w	#0x0020,0x9c(%a0)
 .Lsdone:

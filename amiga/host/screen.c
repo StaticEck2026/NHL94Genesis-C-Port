@@ -237,18 +237,24 @@ void screen_wait_vblank(void)
 
 int screen_frame_lines(void) { return screen_pal ? 312 : 262; }
 
+volatile UWORD vb_vpos;                                   /* (prof_asm.S: the line the last vblank's interrupt saw) */
 ULONG screen_lines(void)
 {
-    ULONG n, v, pend;
+    ULONG n, v, pend, at;
     do {
         n = vb_count;
+        at = vb_vpos;
         v = (ULONG)(CREG(VPOSR) & 7) << 8 | (CREG(VHPOSR) >> 8);
         pend = CREG(INTREQR) & 0x0020;
     } while (n != vb_count);
-    /* (the beam has gone round but the vertical blank's interrupt is not taken yet, waiting behind
-     * another level 3 handler: that frame counts already, or the time would go back a frame) */
-    if (pend && v < (ULONG)screen_frame_lines() / 2) n++;
-    return n * (ULONG)screen_frame_lines() + v;
+    /* the lines since the last vblank's interrupt, wherever on the beam it came (an emulated A1200 has it
+     * a few lines before line 0: counting from line 0 made the time go back a frame); a vblank whose
+     * interrupt is waiting behind another level 3 handler counts already */
+    ULONG L = (ULONG)screen_frame_lines();
+    long d = (long)v - (long)at;
+    if (d < 0) d += (long)L;
+    if (pend) n++;                                        /* (d is then the lines since that vblank: it began at the same line) */
+    return n * L + (ULONG)d;
 }
 
 void screen_close(void)
