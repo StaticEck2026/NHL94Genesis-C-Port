@@ -76,7 +76,10 @@ enum { D0, D1, D2, D3, A0, A1, A2, A3 };
 #define LVO_SetAPen        (-342)
 #define LVO_InitBitMap     (-390)
 #define LVO_OwnBlitter     (-456)
+#define LVO_SetChipRev     (-888)    /* V39: SETCHIPREV_BEST turns on the best chipset the machine has (what SetPatch does) */
+#define SETCHIPREV_BEST    0xFFFFFFFFUL
 #define LVO_DisownBlitter  (-462)
+#define GFX_VERSION(g)     (*(const UWORD *)((const UBYTE *)(g) + 20))
 #define GFX_ACTIVIEW(g)    (*(void **)((UBYTE *)(g) + 34))
 #define GFX_COPINIT(g)     (*(void **)((UBYTE *)(g) + 38))
 #define GFX_DEFAULTFONT(g) (*(void **)((UBYTE *)(g) + 154))

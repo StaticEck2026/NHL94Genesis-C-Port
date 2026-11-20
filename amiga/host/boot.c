@@ -262,12 +262,18 @@ LONG amiga_main(const char *args, LONG arglen)
     if (DOSBase && !wbmsg) out = CALL(DOSBase, LVO_Output);
 
     UWORD kv = EXEC_VERSION(SysBase), ks = EXEC_SOFTVER(SysBase), attn = EXEC_ATTNFLAGS(SysBase);
+    UBYTE chiprev_boot = GfxBase ? GFX_CHIPREVBITS0(GfxBase) : 0;
+    /* Kickstart starts AGA machines in ECS mode, and SetPatch normally switches them over with
+     * SetChipRev(SETCHIPREV_BEST). A bare boot disk runs no SetPatch, so ask graphics.library for the
+     * best chipset here, the same legal call (V39 and up; Kickstart below V39 is refused below) */
+    if (GfxBase && EXEC_VERSION(SysBase) >= 39 && GFX_VERSION(GfxBase) >= 39)
+        CALL(GfxBase, LVO_SetChipRev, REG(D0, SETCHIPREV_BEST));
     UBYTE chiprev = GfxBase ? GFX_CHIPREVBITS0(GfxBase) : 0;
     int pal = GfxBase && (GFX_DISPLAYFLAGS(GfxBase) & DISPLAY_PAL);
     put(NHL94AGA_VSTRING "\n");
     put("Kickstart "); putu(kv); put("."); put3(ks);
     put(", CPU "); put(attn & AFF_68040 ? "68040+" : attn & AFF_68030 ? "68030" : attn & AFF_68020 ? "68020" : "68000/010");
-    put(attn & AFF_68881 ? " with FPU" : ""); put(", chipset bits $"); puth(chiprev, 2);
+    put(attn & AFF_68881 ? " with FPU" : ""); put(", chipset bits $"); puth(chiprev_boot, 2); put(" -> $"); puth(chiprev, 2);
     put(pal ? ", PAL" : ", NTSC"); put("\n");
 
     const char *why = 0;
@@ -287,11 +293,11 @@ LONG amiga_main(const char *args, LONG arglen)
     } else {
         static char l1[48], l2[48], l3[48];
         struct buf b1 = { l1, 0, sizeof l1 }, b2 = { l2, 0, sizeof l2 }, b3 = { l3, 0, sizeof l3 };
-        cur = &b1; put("NHL94AGA " NHL94AGA_VERSION "  (P1 boot test)");
+        cur = &b1; put("NHL94AGA " NHL94AGA_VERSION "  P1 test");
         cur = &b2; put("Kickstart "); putu(kv); put("."); put3(ks); put("  AGA  "); put(pal ? "PAL" : "NTSC");
         cur = &b3; put("Chip RAM free: "); putu(chip_before >> 10); put(" KB");
         cur = &logb;
-        const char *lines[4] = { l1, l2, l3, "Left mouse or fire: back to the OS" };
+        const char *lines[4] = { l1, l2, l3, "Mouse or fire: back to OS" };
         draw_report(lines, 4);
         build_copper(pal);
         motors_off();
