@@ -103,7 +103,7 @@ def main(core_so, kick, seconds, command, out, disks):
         run_disks.append(dst)
     startup = os.path.join(out, 'startup')
     with open(startup, 'w') as f:
-        f.write('Echo "puaerun: %s"\n%s\nEcho "puaerun: done"\n' % (command, command))
+        f.write('Echo "puaerun: %s"\n%s\nEcho "puaerun: done"\n' % (command.split('\n')[0], command))   # (several lines: one command each)
     subprocess.run(['xdftool', run_disks[0], 'delete', 's/Startup-Sequence', '+', 'write', startup, 's/Startup-Sequence'],
                    check=True, stdout=subprocess.DEVNULL)
     m3u = os.path.join(out, 'run (MD).m3u')

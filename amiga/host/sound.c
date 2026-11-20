@@ -26,7 +26,7 @@ static uint8_t *chip, *chip_end, *chip_next;
 static int8_t *patch_wave[PATCHES][5];                    /* lengths 128, 64, 32, 16, 8 */
 static int8_t *square, *noise, *silence;
 
-struct fm { int on, patch, att, env, phase, voice; uint16_t a4a0; uint32_t age; };
+struct fm { int on, patch, att, env, phase, voice; uint16_t a4a0; uint32_t age; uint16_t pitch_for, per; int k; };   /* (the pitch worked out for a4a0 pitch_for) */
 static struct fm fm[7];                                   /* by the command's channel number e: 0-2 and 4-6 */
 static struct { uint16_t tone[4]; uint8_t att[4]; int latch; int voice[4]; } psg;
 static struct { const int8_t *start, *loop; uint32_t start_len, loop_len; uint16_t per; int on, voice, fresh; } pcm;
@@ -79,7 +79,8 @@ static int8_t *wave(int idx, int k)
     return patch_wave[idx][k];
 }
 
-/* the waveform length and Paula's period for a channel's block and F-number */
+/* the waveform length and Paula's period for a channel's block and F-number (64-bit divisions: done
+ * once for each new frequency, by fm_pitch_of) */
 static void fm_pitch(uint16_t a4a0, int *k, uint16_t *per)
 {
     uint32_t fnum = a4a0 & 0x7FF, block = (a4a0 >> 11) & 7;
@@ -105,6 +106,13 @@ static int env_step(int rate64)
     uint32_t t_ms10 = 67u << ((60 - rate64) / 4);         /* tenths of a ms */
     uint32_t steps = 128u * 167u / (t_ms10 ? t_ms10 : 1);  /* 128 steps of 0.75 dB over that time, a pass 16.7 ms */
     return steps ? (int)steps : 1;
+}
+
+static void fm_pitch_of(struct fm *c, int *k, uint16_t *per)
+{
+    if (c->pitch_for != c->a4a0 || !c->per) { fm_pitch(c->a4a0, &c->k, &c->per); c->pitch_for = c->a4a0; }
+    *k = c->k;
+    *per = c->per;
 }
 
 static void fm_envelope(struct fm *c)
@@ -234,14 +242,14 @@ void sound_frame(void)
             owner[v] = e + 1;
             c->voice = v;
             int k; uint16_t per;
-            fm_pitch(c->a4a0, &k, &per);
+            fm_pitch_of(c, &k, &per);
             paula[v].ptr = paula[v].loop = wave(c->patch, k);
             paula[v].len = paula[v].loop_len = 128u >> k;
             paula[v].per = per;
             paula[v].restart = 1;
         } else if (c->voice >= 0) {
             int k; uint16_t per;
-            fm_pitch(c->a4a0, &k, &per);
+            fm_pitch_of(c, &k, &per);
             if (paula[c->voice].len != (128u >> k)) {     /* (into another octave's waveform) */
                 paula[c->voice].ptr = paula[c->voice].loop = wave(c->patch, k);
                 paula[c->voice].len = paula[c->voice].loop_len = 128u >> k;

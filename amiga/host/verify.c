@@ -543,7 +543,44 @@ LONG amiga_main(const char *args, LONG arglen)
         ULONG ev[2];
         K->eclock_hz = CALL(K->timer, LVO_ReadEClock, REG(A0, ev));
         logf_("E clock %lu Hz\n", K->eclock_hz);
-        K->rom = load_rom(0);
+        static char install_from[128], install_to[128];
+        int install = 0;
+        for (LONG i = 0; i + 8 <= arglen; i++) {          /* NHL94VFY INSTALL <rom file> [TO <directory>] (P4) */
+            if (memcmp(args + i, "INSTALL ", 8)) continue;
+            install = 1;
+            LONG j = i + 8, n = 0;
+            while (j < arglen && args[j] == ' ') j++;
+            while (j < arglen && args[j] != ' ' && args[j] != '\n' && n < 127) install_from[n++] = args[j++];
+            install_from[n] = 0;
+            while (j < arglen && args[j] == ' ') j++;
+            if (j + 3 <= arglen && !memcmp(args + j, "TO ", 3)) {
+                j += 3; n = 0;
+                while (j < arglen && args[j] == ' ') j++;
+                while (j < arglen && args[j] != ' ' && args[j] != '\n' && n < 120) install_to[n++] = args[j++];
+                install_to[n] = 0;
+            }
+            break;
+        }
+        K->rom = load_rom(install ? install_from : 0);
+        if (install) {                                    /* the cartridge checked, then where the game looks for it */
+            rc = 10;
+            if (!K->rom) logs("INSTALL: nothing written\n");
+            else if (install_to[0]) {
+                char to[160];
+                size_t l = strlen(install_to);
+                libc_format(to, sizeof to, "%s%snhl94.bin", install_to, l && (install_to[l - 1] == ':' || install_to[l - 1] == '/') ? "" : "/");
+                if (libc_save(to, K->rom, ROM_SIZE)) { logf_("INSTALL: written to %s (assign NHL94ROM: to it, or keep it beside NHL94VFY)\n", to); rc = 0; }
+                else logf_("INSTALL: could not write %s\n", to);
+            } else {
+                logs("INSTALL: two floppies formatted with the names NHL94ROMA and NHL94ROMB (FORMAT DRIVE DF0: NAME NHL94ROMA), insert each when asked\n");
+                if (libc_save("NHL94ROMA:nhl94.rom.1", K->rom, ROM_SIZE / 2) && libc_save("NHL94ROMB:nhl94.rom.2", K->rom + ROM_SIZE / 2, ROM_SIZE / 2)) {
+                    logs("INSTALL: both halves written\n");
+                    rc = 0;
+                } else logs("INSTALL: a half could not be written\n");
+            }
+            free((void *)K->rom);
+            K->rom = NULL;
+        }
         void *stack = K->rom ? malloc(65536) : NULL;
         if (stack) {
             call_with_stack(run_tests, stack, (char *)stack + 65536);
