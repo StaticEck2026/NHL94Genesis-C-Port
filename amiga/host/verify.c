@@ -322,9 +322,6 @@ static void *open_lib(const char *name, ULONG v) { return (void *)CALL(SysBase, 
 LONG amiga_main(const char *args, LONG arglen);
 LONG amiga_main(const char *args, LONG arglen)
 {
-#ifdef AMIGA_GBASE
-    g_mid = (uint8_t *)&g_store + 0x8000;                 /* the work RAM's base register (amiga/tools/mem_be.py --gbase) */
-#endif
     SysBase = *(void **)4;
     DOSBase = open_lib("dos.library", 36);
     if (!DOSBase) return 20;
