@@ -21,6 +21,7 @@
 #include "hash.h"
 #include "intent.h"
 #include "disp_core.h"
+#include "disp_draw.h"
 #include "mdrt/vdp.h"                                     /* the host build's renderer: the picture reference only */
 
 #define FNV0 0xCBF29CE484222325ull
@@ -284,7 +285,7 @@ static void frame_stats(long frame)
             core.reg[11] & 7, pw, ph, n[0], pal[0], pri[0], n[1], pal[1], pri[1], wrows, wcols, sn, sarea, sbig, spal, spri,
             hsv[0], vsv[0], hsv[1], vsv[1], st_cell_bytes, st_tile_bytes, st_sat_bytes, st_hs_bytes, (unsigned)g.VBint);
 }
-static long frames_wanted, checked, bad_ram, bad_vdp, first_bad = -1, intent_passes, bad_pic, first_bad_pic, bad_disp, first_bad_disp;
+static long frames_wanted, checked, bad_ram, bad_vdp, first_bad = -1, intent_passes, bad_pic, first_bad_pic, bad_disp, first_bad_disp, bad_draw, first_bad_draw;
 static jmp_buf done;
 void plat_frame_done(long frame)
 {
@@ -321,6 +322,18 @@ void plat_frame_done(long frame)
     for (int y = 0; y < mdrt_vdp_height(&refv); y++) hp = fnv(hp, pic + y * 320, (size_t)mdrt_vdp_width(&refv) * 2);
     uint64_t hd = FNV0;                                   /* and the picture disp_core's lists describe */
     for (int y = 0; y < 224; y++) { dline(y, pic); hd = fnv(hd, pic, (size_t)disp.width * 2); }
+    /* and the six bitplanes the drawing side keeps up to date, turned back into colours (with the
+     * display switched off the Amiga shows no bitplanes: the backdrop) */
+    draw_update();
+    uint64_t hw = FNV0;
+    for (int y = 0; y < 224; y++) {
+        for (int x = 0; x < disp.width; x++) {
+            int c = 0;
+            for (int k = 0; k < 6; k++) c |= ((draw.plane[k][y * DRAW_STRIDE + (x >> 3)] >> (7 - (x & 7))) & 1) << k;
+            pic[x] = (c && (disp.reg[1] & 0x40)) ? disp.pal[c] : disp.pal[disp.reg[7] & 0x3F];
+        }
+        hw = fnv(hw, pic, (size_t)disp.width * 2);
+    }
     if (out) {                                            /* the Amiga's reference: ram_hash32, big-endian */
         uint32_t h = ram_hash32(ram);
         uint8_t be[4] = { (uint8_t)(h >> 24), (uint8_t)(h >> 16), (uint8_t)(h >> 8), (uint8_t)h };
@@ -342,6 +355,7 @@ void plat_frame_done(long frame)
         if (gv != hv) { bad_vdp++; if (first_bad < 0) first_bad = frame; }
         if (gp != hp) { if (!bad_pic) first_bad_pic = frame; bad_pic++; }
         if (gp != hd) { if (!bad_disp) first_bad_disp = frame; bad_disp++; }
+        if (gp != hw) { if (!bad_draw) first_bad_draw = frame; bad_draw++; }
     }
     if (frame >= frames_wanted) longjmp(done, 1);
 }
@@ -371,6 +385,7 @@ int main(int argc, char **argv_in)
     rosters_retail();
     core_power_on(0);
     disp_reset();
+    draw_reset();
     if (!setjmp(done)) run68k(Start);
     if (out) fclose(out);
     if (intent_out) fclose(intent_out);
@@ -381,7 +396,11 @@ int main(int argc, char **argv_in)
     if (bad_pic) printf(", first at frame %ld", first_bad_pic);
     printf("; the backend's lists give another picture in %ld", bad_disp);
     if (bad_disp) printf(", first at frame %ld", first_bad_disp);
+    printf("; the drawn bitplanes differ in %ld", bad_draw);
+    if (bad_draw) printf(", first at frame %ld", first_bad_draw);
+    printf(" (%u screen cells drawn in %u updates, %u of them whole screens)", draw.cells_drawn, draw.updates, draw.full_updates);
+    if (getenv("HALCHECK_WHY")) for (int i = 0; i < 26; i++) if (disp.why[i]) printf(" why[%d]=%u", i, disp.why[i]);
     printf(" (DMAs %u, fills %u, VRAM copies %u, VRAM reads %u, sound commands %u, restarts %u, other $96 %u)\n",
            core.dmas, core.fills, core.copies, core.vram_reads, core.commands, core.restarts, core.odd_targets);
-    return checked && !bad_ram && !bad_vdp && !bad_pic && !bad_disp ? 0 : 1;
+    return checked && !bad_ram && !bad_vdp && !bad_pic && !bad_disp && !bad_draw ? 0 : 1;
 }

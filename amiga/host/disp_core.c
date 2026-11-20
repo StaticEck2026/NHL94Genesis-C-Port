@@ -61,10 +61,21 @@ void disp_reg(int r, uint8_t v)
     disp.reg[r] = v;
     layout();
     for (int k = 0; k < 3; k++) if (base[k] != disp.base[k] || size[k] != disp.size[k]) reseed(k);
+    /* a register that places, sizes or scrolls the picture means the bitmap is drawn again. Not
+     * these: 1 (display on and off is the copper's business, the bitmap stays up to date behind it;
+     * its other bits are interrupts and DMA), 7 (the backdrop is colour 0), 10 (the line interrupt),
+     * 15 and 19 on (the requests' own registers) */
+    if (r != 1 && r != 7 && r != 10 && r != 15 && r < 19) { disp.layout_dirty = 1; disp.why[r]++; }
 }
 
 void disp_cram(int i, uint16_t c) { disp.pal[i & 63] = c; }
-void disp_vsram(int i, uint16_t v) { if (i >= 0 && i < 40) disp.vs[i] = v; }
+void disp_vsram(int i, uint16_t v)
+{
+    if (i < 0 || i >= 40 || disp.vs[i] == v) return;
+    disp.vs[i] = v;
+    disp.layout_dirty = 1;
+    disp.why[24]++;
+}
 
 uint8_t disp_byte(uint16_t a)
 {
@@ -85,16 +96,29 @@ static void put(uint16_t a, uint8_t b)
     struct disp *d = &disp;
     uint32_t *row = &d->tile[a >> 5][(a >> 2) & 7];
     int x = (a & 3) * 2;
-    *row = (*row & ~(0xC0C0C0C0u >> x)) | (c2p[b] >> x);
-    d->tile_dirty[a >> 8] |= (uint8_t)(1 << ((a >> 5) & 7));
+    uint32_t now = (*row & ~(0xC0C0C0C0u >> x)) | (c2p[b] >> x);
     uint32_t off = (uint32_t)a - d->sprites;
-    if (a >= d->sprites && off < d->sprites_size && (off & 7) < 4) d->sat[off] = b;
+    if (a >= d->sprites && off < d->sprites_size) {
+        if ((off & 7) < 4 && d->sat[off] != b) { d->sat[off] = b; d->sprites_dirty = 1; }
+        if (now != *row) d->sprites_dirty = 1;
+    }
+    if (now == *row) return;                              /* the same byte again changes nothing to draw */
+    *row = now;
+    d->tile_dirty[a >> 8] |= (uint8_t)(1 << ((a >> 5) & 7));
+    d->any_tile_dirty = 1;
+    uint32_t hoff = (uint16_t)(a - d->hscroll);           /* the horizontal scroll table: the entries the scroll mode reads */
+    if (hoff < 0x380) {
+        int mode = d->reg[11] & 3;
+        if (mode == 3 || mode == 1 || (mode == 2 && (hoff & 0x1F) < 4) || hoff < 4) { d->layout_dirty = 1; d->why[25]++; }
+    }
     int table = 0;
     for (int k = 0; k < 3; k++) {
         uint32_t o = (uint16_t)(a - d->base[k]);          /* (a table past the top of VRAM goes on from address 0) */
         if (o >= d->size[k]) continue;
         uint16_t *c = &d->cell[k][o >> 1];
         *c = (a & 1) ? (uint16_t)((*c & 0xFF00) | b) : (uint16_t)((*c & 0x00FF) | b << 8);
+        d->cell_dirty[k][o >> 4] |= (uint8_t)(1 << ((o >> 1) & 7));
+        d->any_cell_dirty = 1;
         table = 1;
     }
     if (table) d->cells_written++; else d->tile_bytes_written++;

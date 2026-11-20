@@ -58,7 +58,7 @@ $(BESRC)/.stamp: $(wildcard ../src/*.c ../src/*.h) tools/mem_be.py
 $(B)/game/%.o: ../src/%.c $(BESRC)/.stamp
 	@mkdir -p $(B)/game
 	$(CC) $(GFLAGS) $(GAMEWARN) -c $(BESRC)/$*.c -o $@
-$(B)/verify.o $(B)/hal_core.o $(B)/libc_amiga.o $(B)/prof.o $(B)/hot.o $(B)/disp_core.o: $(B)/%.o: host/%.c host/hal_core.h host/hash.h host/libc_amiga.h host/prof.h host/amiga.h $(B)/version.h $(BESRC)/.stamp
+$(B)/verify.o $(B)/hal_core.o $(B)/libc_amiga.o $(B)/prof.o $(B)/hot.o $(B)/disp_core.o $(B)/disp_draw.o: $(B)/%.o: host/%.c host/hal_core.h host/hash.h host/libc_amiga.h host/prof.h host/amiga.h $(B)/version.h $(BESRC)/.stamp
 	$(CC) $(GFLAGS) -c $< -o $@
 $(B)/NHL94VFY.elf: $(VOBJS) host/amiga.ld
 	$(CC) -mcpu=68020 -msoft-float -O2 -flto -fno-pic -nostdlib -static -Wl,-T,host/amiga.ld -Wl,--emit-relocs \
@@ -83,8 +83,8 @@ host-tests:
 	cc -std=gnu11 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined -Ihost host/arena.c tools/arenatest.c -o ../build/amiga-tools/arenatest
 	../build/amiga-tools/arenatest
 	cd .. && amiga/tools/halcheck.sh "$(CURDIR)/$(ROM)"
-# (disp_core.o: the display backend's portable half must compile for the 68020 before anything links it)
-check: all $(B)/disp_core.o
+# (disp_core.o, disp_draw.o: the display backend's portable code must compile for the 68020 before anything links it)
+check: all $(B)/disp_core.o $(B)/disp_draw.o
 	hunktool info $(B)/NHL94AGA
 	$(PY) tools/noretail.py --program $(B)/NHL94VFY "$(ROM)" $(ADF)
 disasm: $(B)/NHL94AGA.elf

@@ -12,7 +12,7 @@ SRC=$(ls src/*.c | grep -v '^src/z80.c$')
 # shellcheck disable=SC2086
 # (ext/pulseman's VDP renderer is linked for the picture reference: a host tool only)
 cc -std=gnu11 -O2 -g -Wall -Wextra -Wshadow -Wno-unused-parameter -Werror -Isrc -Iamiga/host -Iext/pulseman/include \
-    -o build/amiga-tools/halcheck $SRC amiga/host/hal_core.c amiga/host/disp_core.c amiga/tools/halcheck.c \
+    -o build/amiga-tools/halcheck $SRC amiga/host/hal_core.c amiga/host/disp_core.c amiga/host/disp_draw.c amiga/tools/halcheck.c \
     ext/pulseman/src/vdp/render.c ext/pulseman/src/vdp/vdp.c
 S=tools/oracle/scripts
 fail=0
