@@ -24,7 +24,7 @@
 #include "hal_core.h"
 #include "hash.h"
 
-const char nhl94vfy_vertag[] __attribute__((used)) = "\0$VER: NHL94VFY " NHL94AGA_VERSION;
+const char nhl94vfy_vertag[] __attribute__((used)) = "\0$VER: NHL94VFY " NHL94AGA_VERSION " (" NHL94AGA_DATE ") " NHL94AGA_COMMIT;
 
 extern char __data_start[], __data_end[], __bss_start[], __bss_end[];
 extern void (*__init_array_start[])(void), (*__init_array_end[])(void);
@@ -301,7 +301,7 @@ LONG amiga_main(void)
     K->sys = SysBase;
     K->dos = DOSBase;
     K->only = -1;
-    logs("NHL94VFY " NHL94AGA_VERSION " (P5: the game's logic on this Amiga, checked against the reference)\n");
+    logs("NHL94VFY " NHL94AGA_VERSION " " NHL94AGA_COMMIT " (P5: the game's logic on this Amiga, checked against the reference)\n");
     UWORD attn = EXEC_ATTNFLAGS(SysBase);
     logf_("Kickstart %u.%u, CPU %s, chip free %lu KB, other free %lu KB\n", EXEC_VERSION(SysBase), EXEC_SOFTVER(SysBase),
           attn & AFF_68040 ? "68040+" : attn & AFF_68030 ? "68030" : attn & AFF_68020 ? "68020" : "68000/010",

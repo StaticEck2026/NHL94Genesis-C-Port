@@ -35,10 +35,12 @@ ADF     := $(B)/nhl94-aga-v$(VERSION).adf
 
 all: $(B)/NHL94AGA $(B)/NHL94VFY $(ADF)
 
-$(B)/version.h: VERSION
+$(B)/version.h: FORCE
 	@mkdir -p $(B)
-	@printf '#define NHL94AGA_VERSION "%s"\n#define NHL94AGA_VSTRING "NHL94AGA %s (%s) %s"\n' \
-	    "$(VERSION)" "$(VERSION)" "$(DATE)" "$(COMMIT)" > $@
+	@printf '#define NHL94AGA_VERSION "%s"\n#define NHL94AGA_DATE "%s"\n#define NHL94AGA_COMMIT "%s"\n#define NHL94AGA_VSTRING "NHL94AGA %s (%s) %s"\n' \
+	    "$(VERSION)" "$(DATE)" "$(COMMIT)" "$(VERSION)" "$(DATE)" "$(COMMIT)" > $@.new
+	@cmp -s $@.new $@ && rm $@.new || mv $@.new $@
+FORCE:
 $(B)/%.o: host/%.c host/amiga.h $(B)/version.h
 	$(CC) $(CFLAGS) -c $< -o $@
 $(B)/game/%.o: ../src/%.c $(wildcard ../src/*.h)
@@ -52,7 +54,7 @@ $(B)/NHL94VFY: $(B)/NHL94VFY.elf tools/elf2hunk.py
 	$(PY) tools/elf2hunk.py $< $@
 verify: $(B)/NHL94VFY
 verify-disks: $(B)/NHL94AGA $(B)/NHL94VFY tools/mkverify.sh tools/mkadf.sh
-	tools/mkverify.sh "$(abspath $(ROM))" $(B) $(VERSION)
+	tools/mkverify.sh "$(CURDIR)/$(ROM)" $(B) $(VERSION)
 $(B)/%.o: host/%.S
 	@mkdir -p $(B)
 	$(CC) -mcpu=68020 -c $< -o $@
@@ -70,4 +72,4 @@ disasm: $(B)/NHL94AGA.elf
 	$(OBJDUMP) -d $< | less
 clean:
 	rm -f $(B)/*.o $(B)/game/*.o $(B)/NHL94AGA $(B)/NHL94AGA.elf $(B)/NHL94AGA.map $(B)/NHL94VFY $(B)/NHL94VFY.elf $(B)/NHL94VFY.map $(B)/version.h
-.PHONY: all check disasm clean verify verify-disks
+.PHONY: all check disasm clean verify verify-disks FORCE
