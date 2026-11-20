@@ -25,6 +25,8 @@
 #include "hash.h"
 #include "intent.h"
 #include "sndcmd.h"
+#include "sound.h"
+#include "audio.h"
 #include "prof.h"
 #include "disp_core.h"
 #include "disp_draw.h"
@@ -119,7 +121,8 @@ static long nover;
 static int intent_on, show_on;                   /* (K->intent and K->show, beside the hooks that test them for every word) */
 static ULONG t_lines, last_vb;
 static uint16_t *times;
-static UBYTE *obj_chip, *win_planes;             /* (SHOW: the scrolled scene's bitmaps in Chip RAM; the window for the planes' hash) */
+static UBYTE *obj_chip, *win_planes, *snd_chip;
+static int sound_on;                             /* (SHOW: sound.c plays the game's sound on Paula) */             /* (SHOW: the scrolled scene's bitmaps in Chip RAM; the window for the planes' hash) */
 static int was_obj;                          /* (SHOW: each pass's logic and drawing in raster lines, for NAME.drw) */                   /* (SHOW: the time base is the beam, raster lines; the E clock stops while the machine is taken) */
 static long line_ns(void) { return screen_pal ? 64000 : 63556; }
 #define OVER_MAX 4096
@@ -175,6 +178,7 @@ void plat_frame_done(long frame)
         } else h = (ref || made) ? planes_hash32(screen_plane) : 0;
         if (objmode) { blit_wait(); screen_present_obj(obj.buf[obj.shown], obj.px0, obj.py0); }
         else screen_present();
+        if (sound_on) { sound_frame(); audio_apply(); }
         screen_dbg[5] = 3;
         screen_wait_vblank();
         screen_dbg[5] = 0;
@@ -226,10 +230,12 @@ void plat_vram_long(uint16_t a, uint32_t v) { if (show_on) disp_vram_long(a, v);
 void plat_vram_fill(uint16_t a, uint8_t b, uint32_t n, uint8_t step) { if (show_on) disp_vram_fill(a, b, n, step); if (intent_on) intent_fill(a, b, n, step); }
 void plat_cram(int i, uint16_t c) { if (show_on) disp_cram(i, c); if (intent_on) intent_cram(i, c); }
 void plat_reg(int r, uint8_t v) { if (show_on) disp_reg(r, v); if (intent_on) intent_reg(r, v); }
-void plat_sound_command(const uint8_t *z) { if (K->audio) sndcmd_command(z); }
-void plat_sound_restart(const uint8_t *z) { if (K->audio) sndcmd_restart(z); }
-void plat_sound_reset(int running) { if (K->audio) sndcmd_reset(running); }
-void plat_psg(uint8_t v) { if (K->audio) sndcmd_psg(v); }
+/* the sound requests: with SHOW (and PLAY) to the sound backend (sound.c, Paula); with AUDIO into
+ * the pass's hash (sndcmd.h) */
+void plat_sound_command(const uint8_t *z) { if (sound_on) sound_command(z); if (K->audio) sndcmd_command(z); }
+void plat_sound_restart(const uint8_t *z) { if (sound_on) sound_restart(z); if (K->audio) sndcmd_restart(z); }
+void plat_sound_reset(int running) { if (sound_on) sound_reset(running); if (K->audio) sndcmd_reset(running); }
+void plat_psg(uint8_t v) { if (sound_on) sound_psg(v); if (K->audio) sndcmd_psg(v); }
 
 static void stopped(const char *why) { (void)why; R->aborted = 2; longjmp(stop, 1); }
 
@@ -321,6 +327,9 @@ static void run_one(void)
         if (obj_chip) obj_reset(obj_chip);
         else logf_("%s: SHOW: no Chip RAM for the scrolled scene; every picture composed\n", t->name);
         was_obj = 0;
+        snd_chip = (UBYTE *)CALL(SysBase, LVO_AllocMem, REG(D0, SOUND_CHIP_BYTES), REG(D1, MEMF_CHIP | MEMF_CLEAR));
+        sound_on = snd_chip && sound_start(snd_chip, SOUND_CHIP_BYTES, K->rom);
+        if (sound_on) audio_start();
         times = K->play ? NULL : malloc((size_t)frames_wanted * 4);
         if (times) memset(times, 0, (size_t)frames_wanted * 4);
         show_on = 1;
@@ -340,6 +349,10 @@ static void run_one(void)
         screen_close();
         if (K->dbg) K->dbg[5] = 11;
         machine_taken = 0;
+        if (sound_on) audio_stop();
+        sound_on = 0;
+        if (snd_chip) CALL(SysBase, LVO_FreeMem, REG(A1, snd_chip), REG(D0, SOUND_CHIP_BYTES));
+        snd_chip = NULL;
         if (obj_chip) CALL(SysBase, LVO_FreeMem, REG(A1, obj_chip), REG(D0, OBJ_CHIP_BYTES));
         obj_chip = NULL;
         free(win_planes);

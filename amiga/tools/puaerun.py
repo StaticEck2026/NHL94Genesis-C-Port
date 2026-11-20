@@ -108,6 +108,8 @@ def main(core_so, kick, seconds, command, out, disks):
     times = [float(t) for t in os.environ['PUAE_SHOTS'].split(',')] if os.environ.get('PUAE_SHOTS') else (10, 20, 30, 60, 120, 300, 600, 1200, 2400)
     shots = {int(t * fps) for t in times if t < seconds}   # (PUAE_SHOTS=t1,t2,...: screenshots at those emulated seconds)
     print('puaerun: %d frames at %.3f Hz, %dx%d' % (total, fps, av.geometry.base_width, av.geometry.base_height), flush=True)
+    if os.environ.get('PUAE_WAV'):
+        core.audio_keep = bytearray()
     presses = []                                          # PUAE_PADS="t0-t1:B+UP,...": RetroPad buttons held from t0 to t1 s (player 1)
     for item in filter(None, os.environ.get('PUAE_PADS', '').split(',')):
         span, names = item.split(':')
@@ -128,6 +130,12 @@ def main(core_so, kick, seconds, command, out, disks):
         if n % int(fps * 300) == 0:
             print('puaerun: %d s emulated' % int(n / fps), flush=True)
     core.screenshot(os.path.join(out, 'shot-end.png'))
+    if os.environ.get('PUAE_WAV') and getattr(core, 'audio_keep', None):   # (the sound, 16-bit stereo at the core's rate)
+        import wave
+        w = wave.open(os.environ['PUAE_WAV'], 'wb')
+        w.setnchannels(2); w.setsampwidth(2); w.setframerate(int(av.timing.sample_rate or 44100))
+        w.writeframes(bytes(core.audio_keep))
+        w.close()
     if os.environ.get('PUAE_DUMP'):                       # (Chip RAM at the end, for a debug block to be found in it)
         p = core.lib.retro_get_memory_data(retro.RETRO_MEMORY_SYSTEM_RAM)
         n = core.lib.retro_get_memory_size(retro.RETRO_MEMORY_SYSTEM_RAM)
