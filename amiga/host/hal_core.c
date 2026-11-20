@@ -221,6 +221,14 @@ void vdp_ctrl16(uint16_t v) { ctrl16(v); }
 void vdp_ctrl(uint32_t v)
 {
     struct core *c = &core;
+    if (!c->pending && (c->reg[1] & 4) && (v & 0xC00000F0u) == 0x40000000u) {   /* "write VRAM from here", no DMA: most of them */
+        uint16_t hi = (uint16_t)((v & 3) << 14), a = (uint16_t)(hi | ((v >> 16) & 0x3FFF));
+        c->addr_hi = hi;
+        c->addr = a;
+        c->code = 0x01;
+        c->wmode = (!c->fill && !((a | c->inc) & 1)) ? 1 : 0;
+        return;
+    }
     if (!c->pending && (v & 0xC0000000u) != 0x80000000u && (c->reg[1] & 4)) {
         c->addr_hi = (uint16_t)((v & 3) << 14);
         c->addr = (uint16_t)(c->addr_hi | ((v >> 16) & 0x3FFF));

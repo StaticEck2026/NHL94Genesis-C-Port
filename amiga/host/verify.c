@@ -125,7 +125,13 @@ void plat_frame_done(long frame)
         if (us * 10 > (long)FRAME_US * 9) R->over90++;
         if (us > (long)FRAME_US) {
             R->over100++;
-            if (over && nover < OVER_MAX) { over[2 * nover] = (uint32_t)frame; over[2 * nover + 1] = (uint32_t)us; nover++; }
+            if (over && nover < OVER_MAX) {               /* (bit 31: the screen is black after it, a screen being built) */
+                uint32_t dark = 0x80000000u;
+                for (int i = 0; i < 64; i++) if (core.cram[i]) dark = 0;
+                over[2 * nover] = (uint32_t)frame;
+                over[2 * nover + 1] = (uint32_t)us | dark;
+                nover++;
+            }
         }
     }
     uint32_t h = ram_hash32((const uint8_t *)&g);

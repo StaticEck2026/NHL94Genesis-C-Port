@@ -37,7 +37,9 @@ void plat_vram_word(uint16_t a, uint16_t w) { vram[a] = (uint8_t)(w >> 8); vram[
 void plat_vram_long(uint16_t a, uint32_t v) { for (int k = 0; k < 4; k++) vram[(uint16_t)(a + k)] = (uint8_t)(v >> (24 - 8 * k)); n_words += 2; }
 void plat_vram_fill(uint16_t a, uint8_t b, uint32_t n, uint8_t step) { n_fill += n; while (n--) { vram[a ^ 1] = b; a = (uint16_t)(a + step); } }
 void plat_cram(int i, uint16_t c) { (void)i; (void)c; n_cram++; }
-void plat_reg(int r, uint8_t v) { (void)r; (void)v; }
+static int lit_before;                                 /* palette entries not black when this frame began */
+static int saw_blank;                                  /* this frame: the display was switched off at some point */
+void plat_reg(int r, uint8_t v) { if (r == 1 && !(v & 0x40)) saw_blank = 1; }
 void plat_sound_command(const uint8_t *z) { (void)z; }
 void plat_sound_reset(int running) { (void)running; }
 void plat_sound_restart(const uint8_t *z) { (void)z; }
@@ -96,11 +98,19 @@ void plat_frame_done(long frame)
         snprintf(key, sizeof key, ",%ld,", frame);
         static char list[4096];
         if (!list[0]) snprintf(list, sizeof list, ",%s,", want);
-        if (strstr(list, key))
-            printf("frame %ld: %lu words by the data port, %lu words by DMA blocks, %lu bytes, %lu fill bytes, %lu palette writes, VBint $%06X\n",
-                   frame, n_words, n_block_words, n_bytes, n_fill, n_cram, (unsigned)g.VBint);
+        if (strstr(list, key)) {
+            int lit = 0;
+            for (int i = 0; i < 64; i++) lit += core.cram[i] != 0;
+            printf("(%d lit at its start) ", lit_before);
+            printf("frame %ld: %lu words by the data port, %lu words by DMA blocks, %lu bytes, %lu fill bytes, %lu palette writes, VBint $%06X; display %s%s, %d colours lit\n",
+                   frame, n_words, n_block_words, n_bytes, n_fill, n_cram, (unsigned)g.VBint,
+                   core.reg[1] & 0x40 ? "on" : "off", saw_blank ? " (switched off in this pass)" : "", lit);
+        }
     }
+    lit_before = 0;
+    for (int i = 0; i < 64; i++) lit_before += core.cram[i] != 0;
     n_words = n_block_words = n_bytes = n_fill = n_cram = 0;
+    saw_blank = !(core.reg[1] & 0x40);
     ram_pack(ram);
     uint64_t hr = fnv(FNV0, ram, sizeof ram);
     uint64_t hv = fnv(fnv(fnv(fnv(FNV0, core.reg, 24), vram, sizeof vram), core.cram, sizeof core.cram), core.vsram, sizeof core.vsram);
