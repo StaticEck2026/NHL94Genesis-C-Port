@@ -10,7 +10,7 @@ import sys
 
 def main(amiga_dir, ref_dir):
     status = 0
-    for ext, gate in (('.h32', 'A-LOGIC'), ('.i32', 'A-DISPLAY-INTENT')):
+    for ext, gate in (('.h32', 'A-LOGIC'), ('.i32', 'A-DISPLAY-INTENT'), ('.p32', 'A-DISPLAY-PLANES'), ('.a32', 'A-AUDIO-CMD')):
         names = sorted(f for f in os.listdir(amiga_dir) if f.endswith(ext))
         if names or ext == '.h32':
             status |= compare(amiga_dir, ref_dir, names, gate)

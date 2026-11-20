@@ -24,10 +24,12 @@
 #include "hal_core.h"
 #include "hash.h"
 #include "intent.h"
+#include "sndcmd.h"
 #include "prof.h"
 #include "disp_core.h"
 #include "disp_draw.h"
 #include "disp_obj.h"
+#include "blit.h"
 #include "screen.h"
 #include "input.h"
 
@@ -66,6 +68,7 @@ struct keep {
     ULONG eclock_hz;
     int only;                                   /* -1: every test */
     int intent;                                 /* NHL94VFY <script> INTENT: check the display requests (A-DISPLAY-INTENT) */
+    int audio;                                  /* NHL94VFY <script> AUDIO: check the sound commands (A-AUDIO-CMD) */
     int show, pal;                              /* NHL94VFY <script> SHOW [PAL]: the picture on screen (P6.5), checked by its planes' hash */
     long frames_max;
     int play;                                   /* NHL94VFY PLAY: the game itself, on screen, played with the Amiga's controllers; Esc quits */
@@ -170,7 +173,7 @@ void plat_frame_done(long frame)
             obj_window(wp);
             h = planes_hash32(wp);
         } else h = (ref || made) ? planes_hash32(screen_plane) : 0;
-        if (objmode) screen_present_obj(obj.buf[obj.shown], obj.px0, obj.py0);
+        if (objmode) { blit_wait(); screen_present_obj(obj.buf[obj.shown], obj.px0, obj.py0); }
         else screen_present();
         screen_dbg[5] = 3;
         screen_wait_vblank();
@@ -178,7 +181,7 @@ void plat_frame_done(long frame)
         last_vb = vb_count;
     } else {
         us = to_us(eclock() - t_start);
-        h = intent_on ? intent_take() : ram_hash32((const uint8_t *)&g);
+        h = K->audio ? sndcmd_take() : intent_on ? intent_take() : ram_hash32((const uint8_t *)&g);
     }
     us += draw_us;
     if (frame == 1) R->first_us = us;                     /* (power on: the cartridge's checksum of 1 MB) */
@@ -223,10 +226,10 @@ void plat_vram_long(uint16_t a, uint32_t v) { if (show_on) disp_vram_long(a, v);
 void plat_vram_fill(uint16_t a, uint8_t b, uint32_t n, uint8_t step) { if (show_on) disp_vram_fill(a, b, n, step); if (intent_on) intent_fill(a, b, n, step); }
 void plat_cram(int i, uint16_t c) { if (show_on) disp_cram(i, c); if (intent_on) intent_cram(i, c); }
 void plat_reg(int r, uint8_t v) { if (show_on) disp_reg(r, v); if (intent_on) intent_reg(r, v); }
-void plat_sound_command(const uint8_t *z) { (void)z; }
-void plat_sound_restart(const uint8_t *z) { (void)z; }
-void plat_sound_reset(int running) { (void)running; }
-void plat_psg(uint8_t v) { (void)v; }
+void plat_sound_command(const uint8_t *z) { if (K->audio) sndcmd_command(z); }
+void plat_sound_restart(const uint8_t *z) { if (K->audio) sndcmd_restart(z); }
+void plat_sound_reset(int running) { if (K->audio) sndcmd_reset(running); }
+void plat_psg(uint8_t v) { if (K->audio) sndcmd_psg(v); }
 
 static void stopped(const char *why) { (void)why; R->aborted = 2; longjmp(stop, 1); }
 
@@ -286,7 +289,7 @@ static void run_one(void)
         if (!text || !parse_script(text)) { logf_("%s: cannot read %s\n", t->name, path); R->aborted = 3; return; }
         free(text);
     }
-    const char *ext = K->show ? "p32" : K->intent ? "i32" : "h32";
+    const char *ext = K->show ? "p32" : K->audio ? "a32" : K->intent ? "i32" : "h32";
     libc_format(path, sizeof path, "PROGDIR:refs/%s.%s", t->name, ext);
     ref = K->play ? NULL : libc_load(path, &n);
     ref_len = ref ? n / 4 : 0;
@@ -313,9 +316,9 @@ static void run_one(void)
         if (!screen_open(K->pal, K->profile)) { logf_("%s: SHOW: not enough Chip RAM for the screen\n", t->name); R->aborted = 3; return; }
         disp_reset();
         draw_reset(screen_plane);
-        obj_chip = (UBYTE *)CALL(SysBase, LVO_AllocMem, REG(D0, 3 * OBJ_BYTES + OBJ_RW * OBJ_RH), REG(D1, MEMF_CHIP | MEMF_CLEAR));
+        obj_chip = (UBYTE *)CALL(SysBase, LVO_AllocMem, REG(D0, OBJ_CHIP_BYTES), REG(D1, MEMF_CHIP | MEMF_CLEAR));
         win_planes = malloc(6 * DRAW_PLANE_BYTES);
-        if (obj_chip) obj_reset(obj_chip, obj_chip + 3 * OBJ_BYTES, obj_chip + OBJ_BYTES, obj_chip + 2 * OBJ_BYTES);
+        if (obj_chip) obj_reset(obj_chip);
         else logf_("%s: SHOW: no Chip RAM for the scrolled scene; every picture composed\n", t->name);
         was_obj = 0;
         times = K->play ? NULL : malloc((size_t)frames_wanted * 4);
@@ -337,7 +340,7 @@ static void run_one(void)
         screen_close();
         if (K->dbg) K->dbg[5] = 11;
         machine_taken = 0;
-        if (obj_chip) CALL(SysBase, LVO_FreeMem, REG(A1, obj_chip), REG(D0, 3 * OBJ_BYTES + OBJ_RW * OBJ_RH));
+        if (obj_chip) CALL(SysBase, LVO_FreeMem, REG(A1, obj_chip), REG(D0, OBJ_CHIP_BYTES));
         obj_chip = NULL;
         free(win_planes);
         win_planes = NULL;
@@ -470,6 +473,8 @@ LONG amiga_main(const char *args, LONG arglen)
     K->prof_last = 0x7FFFFFFF;
     for (LONG i = 0; i + 6 <= arglen; i++)
         if (!memcmp(args + i, "INTENT", 6)) K->intent = 1;
+    for (LONG i = 0; i + 5 <= arglen; i++)
+        if (!memcmp(args + i, "AUDIO", 5)) { K->audio = 1; K->intent = 0; }
     for (LONG i = 0; i + 4 <= arglen; i++) {
         if (!memcmp(args + i, "SHOW", 4)) K->show = 1;
         if (i + 3 <= arglen && !memcmp(args + i, "PAL", 3)) K->pal = 1;
@@ -517,9 +522,9 @@ LONG amiga_main(const char *args, LONG arglen)
             free(stack);
             long bad = 0, ran = 0, noref = 0;
             for (int i = 0; i < NTESTS; i++) { bad += K->r[i].bad; if (K->r[i].frames) ran++; noref += K->r[i].noref; }
-            const char *gate = K->show ? "A-DISPLAY-PLANES" : K->intent ? "A-DISPLAY-INTENT" : "A-LOGIC";
+            const char *gate = K->show ? "A-DISPLAY-PLANES" : K->audio ? "A-AUDIO-CMD" : K->intent ? "A-DISPLAY-INTENT" : "A-LOGIC";
             if (noref) logf_("%s: checked on the host (%ld scripts' hashes written beside the program)\n", gate, noref);
-            else logf_("%s: %s (%ld scripts, %ld differing %s)\n", gate, bad || !ran ? "FAIL" : "PASS", ran, bad, K->intent || K->show ? "passes" : "frames");
+            else logf_("%s: %s (%ld scripts, %ld differing %s)\n", gate, bad || !ran ? "FAIL" : "PASS", ran, bad, K->intent || K->show || K->audio ? "passes" : "frames");
             rc = bad || !ran ? 10 : 0;
         }
         free((void *)K->rom);

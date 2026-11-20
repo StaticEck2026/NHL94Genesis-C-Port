@@ -173,7 +173,7 @@ int screen_open(int pal, int profile)
     CREGL(COP1LC) = (ULONG)cop[0];
     CREG(COPJMP1) = 0;
     cop_next = 1;
-    CREG(DMACON) = DMAF_SETCLR | DMAF_MASTER | DMAF_RASTER | DMAF_COPPER;
+    CREG(DMACON) = DMAF_SETCLR | DMAF_MASTER | DMAF_RASTER | DMAF_COPPER | DMAF_BLITTER;
     CREG(INTENA) = (UWORD)(INTF_SETCLR | INTF_INTEN | INTF_VERTB | (profile ? 0x0010 : 0));
     return 1;
 }

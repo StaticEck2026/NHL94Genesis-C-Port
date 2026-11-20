@@ -20,6 +20,7 @@
 #include "hal_core.h"
 #include "hash.h"
 #include "intent.h"
+#include "sndcmd.h"
 #include "disp_core.h"
 #include "disp_draw.h"
 #include "disp_obj.h"
@@ -78,10 +79,10 @@ void plat_vsram(int i, uint16_t v) { intent_vsram(i, v); disp_vsram(i, v); }
 static int lit_before;                                 /* palette entries not black when this frame began */
 static int saw_blank;                                  /* this frame: the display was switched off at some point */
 void plat_reg(int r, uint8_t v) { intent_reg(r, v); disp_reg(r, v); if (r == 1 && !(v & 0x40)) saw_blank = 1; }
-void plat_sound_command(const uint8_t *z) { (void)z; }
-void plat_sound_reset(int running) { (void)running; }
-void plat_sound_restart(const uint8_t *z) { (void)z; }
-void plat_psg(uint8_t v) { (void)v; }
+void plat_sound_command(const uint8_t *z) { sndcmd_command(z); }
+void plat_sound_reset(int running) { sndcmd_reset(running); }
+void plat_sound_restart(const uint8_t *z) { sndcmd_restart(z); }
+void plat_psg(uint8_t v) { sndcmd_psg(v); }
 
 /* the script: "FRAME:BUTTON+BUTTON,..." held from that frame (native/main.c read_script) */
 static struct { long frame; uint16_t b; } *script;
@@ -223,7 +224,7 @@ static void dline(int line, uint16_t *o)
     }
 }
 
-static FILE *golden, *out, *intent_out, *stats, *planes_out;
+static FILE *golden, *out, *intent_out, *stats, *planes_out, *audio_out;
 
 /* HALCHECK_STATS=FILE: a line a frame of what the picture is made of, for the display backend's
  * design (amiga/tools/dispstats.py reads it): the mode, each plane's visible cells that are not
@@ -389,6 +390,11 @@ void plat_frame_done(long frame)
     }
     if (stats) frame_stats(frame);
     st_cell_bytes = st_tile_bytes = st_sat_bytes = st_hs_bytes = 0;
+    uint32_t ha = sndcmd_take();                          /* this pass's sound commands (sndcmd.h) */
+    if (audio_out) {
+        uint8_t be[4] = { (uint8_t)(ha >> 24), (uint8_t)(ha >> 16), (uint8_t)(ha >> 8), (uint8_t)ha };
+        fwrite(be, 1, 4, audio_out);
+    }
     uint32_t hi = intent_take();                          /* this pass's display requests (intent.h) */
     if (intent_out) {
         uint8_t be[4] = { (uint8_t)(hi >> 24), (uint8_t)(hi >> 16), (uint8_t)(hi >> 8), (uint8_t)hi };
@@ -413,8 +419,10 @@ int main(int argc, char **argv_in)
     char **volatile argv = argv_in;
     const char *volatile outpath = NULL, *volatile intentpath = NULL, *volatile planespath = NULL;
     volatile int nargs = argc;
-    while (nargs > 2 && (!strcmp(argv[1], "-o") || !strcmp(argv[1], "-i") || !strcmp(argv[1], "-p"))) {
-        if (argv[1][1] == 'o') outpath = argv[2]; else if (argv[1][1] == 'i') intentpath = argv[2]; else planespath = argv[2];
+    const char *volatile audiopath = NULL;
+    while (nargs > 2 && (!strcmp(argv[1], "-o") || !strcmp(argv[1], "-i") || !strcmp(argv[1], "-p") || !strcmp(argv[1], "-a"))) {
+        if (argv[1][1] == 'o') outpath = argv[2]; else if (argv[1][1] == 'i') intentpath = argv[2];
+        else if (argv[1][1] == 'a') audiopath = argv[2]; else planespath = argv[2];
         argv += 2;
         nargs -= 2;
     }
@@ -427,6 +435,7 @@ int main(int argc, char **argv_in)
     if (outpath) out = fopen(outpath, "wb");
     if (intentpath) intent_out = fopen(intentpath, "wb");
     if (planespath) planes_out = fopen(planespath, "wb");
+    if (audiopath) audio_out = fopen(audiopath, "wb");
     if (getenv("HALCHECK_STATS")) stats = fopen(getenv("HALCHECK_STATS"), "w");
     memcpy(rules, rule_classic, sizeof rules);            /* (the vanilla game: native/vanilla/stubs.c) */
     rom_art = NULL;
@@ -437,12 +446,13 @@ int main(int argc, char **argv_in)
     static uint8_t planes[6][DRAW_PLANE_BYTES];
     uint8_t *const pp[6] = { planes[0], planes[1], planes[2], planes[3], planes[4], planes[5] };
     draw_reset(pp);
-    static uint8_t rink[OBJ_BYTES], rink_hi[OBJ_RW * OBJ_RH], ob0[OBJ_BYTES], ob1[OBJ_BYTES];
-    obj_reset(rink, rink_hi, ob0, ob1);
+    static uint8_t objchip[OBJ_CHIP_BYTES];
+    obj_reset(objchip);
     if (!setjmp(done)) run68k(Start);
     if (out) fclose(out);
     if (intent_out) fclose(intent_out);
     if (planes_out) fclose(planes_out);
+    if (audio_out) fclose(audio_out);
     if (stats) fclose(stats);
     printf("halcheck %s: %ld frames checked, RAM differs in %ld, VDP in %ld; %ld passes with display requests", argv[2], checked, bad_ram, bad_vdp, intent_passes);
     if (first_bad >= 0) printf(", first at frame %ld", first_bad);

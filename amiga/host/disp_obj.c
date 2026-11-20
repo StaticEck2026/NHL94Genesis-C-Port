@@ -1,30 +1,50 @@
-/* The scrolled scene: see disp_obj.h and amiga/notes/p7_design.md. This first version does every
- * operation with the CPU, in C (the operations are the blitter's: copy, and cookie-cut through a
- * mask), so that it can be checked against the reference picture on the host frame by frame; the
- * Amiga's blitter takes them over afterwards under the same check. */
+/* The scrolled scene: see disp_obj.h and amiga/notes/p7_design.md. The picture is made with the
+ * blitter's two operations (amiga/host/blit.h): copies (restoring a buffer from the rink bitmap) and
+ * cookie-cuts through a mask (the rink's high-priority pixels again, plane A, the sprites). The CPU
+ * draws into the rink bitmap, the plane A images and the sprite images only when what they show
+ * changed, and composes the lines where the VDP's sprite limits apply. On the host the blits run in
+ * blit.c's C model, so amiga/tools/halcheck.c's frame-by-frame check covers how they are set up. */
 #include <string.h>
 #include "disp_core.h"
 #include "disp_obj.h"
 #include "disp_draw.h"
+#include "blit.h"
 
 struct obj obj;
 #define SW 32                                             /* screen bytes a line (256 pixels) */
 #define SH 224
+#define AW 34                                             /* bytes a plane row of the plane A images: 256 pixels and a spare word */
+#define SPW 6                                             /* bytes a plane row of a sprite image: up to 32 pixels and a spare word */
+#define SPR_BYTES (SPW * 32 * 6)
+#define NSPR 64
 #define MAXR 512
 struct rect { int16_t x, y, w, h; };                     /* pixels, in the buffers' coordinates (y wraps at 256) */
 static struct rect done[2][MAXR], chg[2][MAXR], adone[2][MAXR];
 static int ndone[2], nchg[2], nadone[2], full[2], active;
 static int a_ver, b_px0[2] = { -1, -1 }, b_py0[2], b_aver[2];   /* plane A's version, and what each buffer was drawn with */
-static uint8_t a_img[SH][6][SW], a_lo[SH][SW], a_hi[SH][SW];   /* plane A and the window on screen, with their opaque masks by priority */
-static int a_any_lo, a_any_hi;
+static uint8_t *a_img, *a_lo_m, *a_hi_m;                 /* plane A and the window on screen: six interleaved planes, and the masks by priority (repeated a plane row) */
+static uint8_t a_lo[SH][SW], a_hi[SH][SW];               /* the masks again, a byte a cell row, for the CPU */
 static int16_t a_row_lo[SH], a_row_hi[SH];               /* bytes of each line with something in the mask */
+static uint8_t *spr_img, *spr_mask;                       /* the sprite images, NSPR of them by link number */
+static struct { uint16_t e; uint8_t size, valid; } spr_key[NSPR];
 static uint8_t rev[256];
 
-void obj_reset(uint8_t *rink, uint8_t *rink_hi, uint8_t *buf0, uint8_t *buf1)
+void obj_reset(uint8_t *chip)
 {
     memset(&obj, 0, sizeof obj);
-    obj.rink = rink; obj.rink_hi = rink_hi; obj.buf[0] = buf0; obj.buf[1] = buf1;
+    obj.rink = chip;
+    obj.rink_hi = chip + OBJ_BYTES;
+    obj.buf[0] = chip + 2 * OBJ_BYTES;
+    obj.buf[1] = chip + 3 * OBJ_BYTES;
+    a_img = chip + 4 * OBJ_BYTES;
+    a_lo_m = a_img + AW * 6 * SH;
+    a_hi_m = a_lo_m + AW * 6 * SH;
+    spr_img = a_hi_m + AW * 6 * SH;
+    spr_mask = spr_img + NSPR * SPR_BYTES;
+    memset(a_img, 0, (size_t)(3 * AW * 6 * SH));
+    memset(spr_key, 0, sizeof spr_key);
     active = 0;
+    b_px0[0] = b_px0[1] = -1;
     for (int b = 0; b < 256; b++) {
         int r = 0;
         for (int i = 0; i < 8; i++) r |= ((b >> i) & 1) << (7 - i);
@@ -62,7 +82,7 @@ static inline void cell_row(unsigned e, int r, uint8_t *p6, uint8_t *mask)
     *mask = o;
 }
 
-/* ---- the rink bitmap: plane B's cells ---------------------------------------------------------- */
+/* ---- the rink bitmap: plane B's cells, and its high-priority pixels as a mask (a plane row each) - */
 
 static void rink_cell(int i)
 {
@@ -76,9 +96,8 @@ static void rink_cell(int i)
         for (int copy = 0; copy < 2; copy++) {
             int bx = cx + copy * 64;
             if (bx >= OBJ_RW) break;
-            uint8_t *l = obj.rink + y * OBJ_LS + bx;
-            for (int k = 0; k < 6; k++) l[k * OBJ_RW] = p6[k];
-            obj.rink_hi[y * OBJ_RW + bx] = hi;
+            uint8_t *l = obj.rink + y * OBJ_LS + bx, *h = obj.rink_hi + y * OBJ_LS + bx;
+            for (int k = 0; k < 6; k++) { l[k * OBJ_RW] = p6[k]; h[k * OBJ_RW] = hi; }
             if (cx >= 32) break;                          /* (only the first 32 columns are repeated) */
         }
     }
@@ -92,53 +111,67 @@ static void add(struct rect *list, int *n, int *overflow, int x, int y, int w, i
     (*n)++;
 }
 
-/* ---- the operations (the blitter's, done here by the CPU) ------------------------------------- */
+/* ---- the blits ---------------------------------------------------------------------------------- */
 
-static void op_copy(uint8_t *dst, const struct rect *r)  /* the rink bitmap into a buffer: whole bytes */
+/* the words of a rectangle of a buffer, rows by six planes, split where the 256 lines wrap */
+static void blit_rect(uint8_t *dst, const uint8_t *src_a, const uint8_t *src_b, int x, int y, int w, int h, uint16_t con0)
 {
-    int x0 = r->x >> 3, x1 = (r->x + r->w - 1) >> 3;
-    if (x0 < 0) x0 = 0;
-    if (x1 >= OBJ_RW) x1 = OBJ_RW - 1;
-    for (int j = 0; j < r->h; j++) {
-        int y = (r->y + j) & 255;
-        for (int k = 0; k < 6; k++) memcpy(dst + y * OBJ_LS + k * OBJ_RW + x0, obj.rink + y * OBJ_LS + k * OBJ_RW + x0, (size_t)(x1 - x0 + 1));
+    if (x < 0) { w += x; x = 0; }
+    if (x + w > OBJ_RW * 8) w = OBJ_RW * 8 - x;
+    if (w <= 0 || h <= 0) return;
+    int w0 = x >> 4, w1 = (x + w - 1) >> 4, words = w1 - w0 + 1;
+    y &= 255;
+    while (h > 0) {
+        int rows = h < 256 - y ? h : 256 - y;
+        uint32_t off = (uint32_t)y * OBJ_LS + 2u * (uint32_t)w0;
+        struct blit bl = { 0 };
+        bl.a = src_a + off;
+        bl.b = src_b ? src_b + off : 0;
+        bl.c = src_b ? dst + off : 0;
+        bl.d = dst + off;
+        bl.amod = bl.bmod = bl.cmod = bl.dmod = (int16_t)(OBJ_RW - 2 * words);
+        bl.con0 = con0;
+        bl.fwm = bl.lwm = 0xFFFF;
+        bl.w = (uint16_t)words;
+        bl.h = (uint16_t)(rows * 6);
+        blit_run(&bl);
+        h -= rows;
+        y = 0;
     }
     obj.restored++;
 }
-
-/* eight pixels (six plane bytes and a mask, the left pixel in bit 7) into the buffer at pixel x of line y */
-static inline void put8(uint8_t *buf, int x, int y, const uint8_t *p6, uint8_t m)
+static void op_copy(uint8_t *buf, const struct rect *r)  /* the rink bitmap into a buffer */
 {
-    if (!m) return;
-    int s = x & 7, b = x >> 3;
-    uint8_t *l = buf + (y & 255) * OBJ_LS;
-    uint8_t m0 = (uint8_t)(m >> s), m1 = s ? (uint8_t)(m << (8 - s)) : 0;
-    for (int k = 0; k < 6; k++) {
-        uint8_t v0 = (uint8_t)(p6[k] >> s);
-        if (m0 && b >= 0) l[k * OBJ_RW + b] = (uint8_t)((l[k * OBJ_RW + b] & ~m0) | (v0 & m0));
-        if (m1 && b + 1 < OBJ_RW) {
-            uint8_t v1 = (uint8_t)(p6[k] << (8 - s));
-            l[k * OBJ_RW + b + 1] = (uint8_t)((l[k * OBJ_RW + b + 1] & ~m1) | (v1 & m1));
-        }
-    }
+    blit_rect(buf, obj.rink, 0, r->x, r->y, r->w, r->h, BC0_USEA | BC0_USED | MINTERM_COPY_A);
+}
+static void op_recut(uint8_t *buf, int x, int y, int w, int h)   /* the rink's high-priority pixels again over a rectangle */
+{
+    blit_rect(buf, obj.rink_hi, obj.rink, x, y, w, h, BC0_USEA | BC0_USEB | BC0_USEC | BC0_USED | MINTERM_COOKIE);
 }
 
-/* the rink's high-priority pixels again, over a rectangle of the buffer (aligned: same coordinates) */
-static void op_recut(uint8_t *buf, const struct rect *r)
+/* an image (six interleaved planes and its mask, `bpr` bytes a plane row, the last word spare) cut
+ * into a buffer with its left edge at pixel x of buffer line y, rows lines of it */
+static void op_cookie(uint8_t *buf, const uint8_t *img, const uint8_t *mask, int bpr, int x, int y, int rows)
 {
-    int x0 = r->x >> 3, x1 = (r->x + r->w - 1) >> 3;
-    if (x1 >= OBJ_RW) x1 = OBJ_RW - 1;
-    for (int j = 0; j < r->h; j++) {
-        int y = (r->y + j) & 255;
-        const uint8_t *hi = obj.rink_hi + y * OBJ_RW;
-        for (int b = x0; b <= x1; b++) {
-            uint8_t m = hi[b];
-            if (!m) continue;
-            for (int k = 0; k < 6; k++) {
-                uint8_t *p = buf + y * OBJ_LS + k * OBJ_RW + b;
-                *p = (uint8_t)((*p & ~m) | (obj.rink[y * OBJ_LS + k * OBJ_RW + b] & m));
-            }
-        }
+    int s = x & 15, words = bpr / 2;
+    y &= 255;
+    while (rows > 0) {
+        int n = rows < 256 - y ? rows : 256 - y;
+        uint8_t *d = buf + (uint32_t)y * OBJ_LS + 2u * (uint32_t)(x >> 4);
+        struct blit bl = { 0 };
+        bl.a = mask; bl.b = img; bl.c = d; bl.d = d;
+        bl.amod = bl.bmod = 0;
+        bl.cmod = bl.dmod = (int16_t)(OBJ_RW - 2 * words);
+        bl.con0 = (uint16_t)(s << 12 | BC0_USEA | BC0_USEB | BC0_USEC | BC0_USED | MINTERM_COOKIE);
+        bl.con1 = (uint16_t)(s << 12);
+        bl.fwm = bl.lwm = 0xFFFF;
+        bl.w = (uint16_t)words;
+        bl.h = (uint16_t)(n * 6);
+        blit_run(&bl);
+        img += n * 6 * bpr;
+        mask += n * 6 * bpr;
+        rows -= n;
+        y = 0;
     }
 }
 
@@ -173,7 +206,7 @@ static int in_window(int cx, int cy)                     /* a screen cell is the
     return cx * 8 >= w0 && cx * 8 < w1;
 }
 
-/* one screen cell of plane A or the window into the A layer, and the rows' counts */
+/* one screen cell of plane A or the window into the A images, and the rows' counts */
 static void a_cell(int cx, int cy, int win)
 {
     unsigned e = win ? disp.cell[2][cy * disp.win_w + cx] : disp.cell[0][cy * 64 + cx];
@@ -181,8 +214,13 @@ static void a_cell(int cx, int cy, int win)
         int y = cy * 8 + r;
         uint8_t p6[6], m;
         cell_row(e, r, p6, &m);
-        for (int k = 0; k < 6; k++) a_img[y][k][cx] = p6[k];
         uint8_t hi = (e & 0x8000) ? m : 0, lo = (e & 0x8000) ? 0 : m;
+        for (int k = 0; k < 6; k++) {
+            uint32_t o = (uint32_t)(y * 6 + k) * AW + (uint32_t)cx;
+            a_img[o] = p6[k];
+            a_hi_m[o] = hi;
+            a_lo_m[o] = lo;
+        }
         a_row_hi[y] = (int16_t)(a_row_hi[y] + (hi != 0) - (a_hi[y][cx] != 0));
         a_row_lo[y] = (int16_t)(a_row_lo[y] + (lo != 0) - (a_lo[y][cx] != 0));
         a_hi[y][cx] = hi;
@@ -190,68 +228,35 @@ static void a_cell(int cx, int cy, int win)
     }
 }
 
-static void a_flags(void)
-{
-    a_any_lo = a_any_hi = 0;
-    for (int y = 0; y < SH; y++) { a_any_lo |= a_row_lo[y]; a_any_hi |= a_row_hi[y]; }
-}
-
 static void a_layer(void)                                 /* all of it */
 {
     for (int cy = 0; cy < SH / 8; cy++) for (int cx = 0; cx < SW; cx++) a_cell(cx, cy, in_window(cx, cy));
-    a_flags();
 }
 
-/* the cells of plane A and the window that were written or show a changed tile (the screen's
- * part: A does not scroll in a scrolled scene) */
+/* the cells of plane A and the window that were written or show a changed tile (the screen's part:
+ * A does not scroll in a scrolled scene) */
 static void a_changes(int tiles)
 {
-    int any = 0;
     a_ver++;
     for (int cy = 0; cy < SH / 8; cy++)
         for (int cx = 0; cx < SW; cx++) {
             int win = in_window(cx, cy), i = win ? cy * disp.win_w + cx : cy * 64 + cx, k = win ? 2 : 0;
             if (!((disp.cell_dirty[k][i >> 3] >> (i & 7) & 1) || (tiles && tile_dirty_used(disp.cell[k][i])))) continue;
             a_cell(cx, cy, win);
-            any = 1;
-        }
-    if (any) a_flags();
-}
-
-/* plane A's pixels of one priority into the buffer, by runs of bytes with something in them */
-static void op_a(uint8_t *buf, int b, uint8_t (*mask)[SW], const int16_t *rows)
-{
-    for (int y = 0; y < SH; y++)
-        for (int bx = 0; bx < SW && rows[y]; bx++) {
-            if (!mask[y][bx]) continue;
-            int run = bx;
-            while (run < SW && mask[y][run]) run++;
-            add(adone[b], &nadone[b], &full[b], obj.px0 + bx * 8, (obj.py0 + y) & 255, (run - bx) * 8 + 8, 1);
-            for (int c = bx; c < run; c++) {
-                uint8_t p6[6];
-                for (int k = 0; k < 6; k++) p6[k] = a_img[y][k][c];
-                put8(buf, obj.px0 + c * 8, obj.py0 + y, p6, mask[y][c]);
-            }
-            bx = run;
         }
 }
 
-/* plane A's pixels of one priority again inside a rectangle of the screen (where something was
- * restored or drawn over a plane A that stayed) */
-static void op_a_clip(uint8_t *buf, uint8_t (*mask)[SW], const int16_t *rows, int x, int y, int w, int h)
+/* plane A of one priority over the screen lines marked in `rows` that have some of it, in bands */
+static void op_a(uint8_t *buf, int b, const uint8_t *mask, const int16_t *count, const uint8_t *rows)
 {
-    int bx0 = x < 0 ? 0 : x >> 3, bx1 = (x + w - 1) >> 3, y1 = y + h;
-    if (bx1 >= SW) bx1 = SW - 1;
-    if (y < 0) y = 0;
-    if (y1 > SH) y1 = SH;
-    for (int l = y; l < y1; l++) {
-        if (!rows[l]) continue;
-        for (int c = bx0; c <= bx1; c++) {
-            if (!mask[l][c]) continue;
-            uint8_t p6[6];
-            for (int k = 0; k < 6; k++) p6[k] = a_img[l][k][c];
-            put8(buf, obj.px0 + c * 8, obj.py0 + l, p6, mask[l][c]);
-        }
+    for (int y = 0; y < SH; y++) {
+        if (!rows[y] || !count[y]) continue;
+        int y1 = y;
+        while (y1 < SH && rows[y1] && count[y1]) y1++;
+        int x = obj.px0;
+        op_cookie(buf, a_img + (uint32_t)y * 6 * AW, mask + (uint32_t)y * 6 * AW, AW, x, obj.py0 + y, y1 - y);
+        add(adone[b], &nadone[b], &full[b], x & ~15, (obj.py0 + y) & 255, 288, y1 - y);
+        y = y1;
     }
 }
 
@@ -302,8 +307,58 @@ static void sprite_list(void)
     }
 }
 
+/* a sprite's image and mask in its slot: its tiles (down the columns first), flips and palette line */
+static void spr_build(const struct spr *s)
+{
+    int sw = s->w / 8, sh = s->h / 8;
+    uint8_t *img = spr_img + s->link * SPR_BYTES, *mask = spr_mask + s->link * SPR_BYTES;
+    memset(img, 0, SPR_BYTES);
+    memset(mask, 0, SPR_BYTES);
+    for (int ty = 0; ty < s->h; ty++) {
+        int row = (s->e & 0x1000) ? s->h - 1 - ty : ty;
+        for (int tx = 0; tx < sw; tx++) {
+            int col = (s->e & 0x0800) ? sw - 1 - tx : tx;
+            unsigned t = ((s->e & 0x7FF) + (unsigned)(col * sh + (row >> 3))) & 0x7FF;
+            uint8_t p6[6], m;
+            cell_row(t | (s->e & 0x6800), row & 7, p6, &m);
+            for (int k = 0; k < 6; k++) {
+                uint32_t o = (uint32_t)(ty * 6 + k) * SPW + (uint32_t)tx;
+                img[o] = p6[k];
+                mask[o] = m;
+            }
+        }
+    }
+    spr_key[s->link].e = (uint16_t)s->e;
+    spr_key[s->link].size = (uint8_t)(sw << 4 | sh);
+    spr_key[s->link].valid = 1;
+}
+
+static int spr_tiles_dirty(const struct spr *s)
+{
+    int n = (s->w / 8) * (s->h / 8);
+    for (int t = 0; t < n; t++) if (tile_dirty_used(((s->e & 0x7FF) + (unsigned)t) & 0x7FF)) return 1;
+    return 0;
+}
+
+/* eight pixels (six plane bytes and a mask, the left pixel in bit 7) into the buffer at pixel x of line y */
+static inline void put8(uint8_t *buf, int x, int y, const uint8_t *p6, uint8_t m)
+{
+    if (!m) return;
+    int s = x & 7, b = x >> 3;
+    uint8_t *l = buf + (y & 255) * OBJ_LS;
+    uint8_t m0 = (uint8_t)(m >> s), m1 = s ? (uint8_t)(m << (8 - s)) : 0;
+    for (int k = 0; k < 6; k++) {
+        uint8_t v0 = (uint8_t)(p6[k] >> s);
+        if (m0 && b >= 0) l[k * OBJ_RW + b] = (uint8_t)((l[k * OBJ_RW + b] & ~m0) | (v0 & m0));
+        if (m1 && b + 1 < OBJ_RW) {
+            uint8_t v1 = (uint8_t)(p6[k] << (8 - s));
+            l[k * OBJ_RW + b + 1] = (uint8_t)((l[k * OBJ_RW + b + 1] & ~m1) | (v1 & m1));
+        }
+    }
+}
+
 /* one sprite, cookie-cut, from its tiles (they go down the columns first) */
-static void op_sprite(uint8_t *buf, int b, const struct spr *s)
+static void op_sprite_cpu(uint8_t *buf, int b, const struct spr *s)
 {
     int sw = s->w / 8, sh = s->h / 8;
     add(done[b], &ndone[b], &full[b], obj.px0 + s->x, (obj.py0 + s->y) & 255, s->w + 8, s->h);
@@ -326,9 +381,26 @@ static void op_sprite(uint8_t *buf, int b, const struct spr *s)
     }
 }
 
-/* ---- the CPU's lines: the whole line composed, a pixel at a time ------------------------------ */
+/* one sprite, cookie-cut into the buffer; the lines off the screen are left out */
+static void op_sprite(uint8_t *buf, int b, const struct spr *s, int tiles)
+{
+    if (!spr_key[s->link].valid || spr_key[s->link].e != (uint16_t)s->e || spr_key[s->link].size != (uint8_t)((s->w / 8) << 4 | s->h / 8))
+        spr_build(s);
+    int y0 = s->y < 0 ? 0 : s->y, y1 = s->y + s->h > SH ? SH : s->y + s->h;
+    if (y1 <= y0) return;
+    int x = obj.px0 + s->x;
+    if (x < 0 || (x >> 4) + SPW / 2 > OBJ_RW / 2) {        /* (past the buffer's edge: the CPU, clipped to the screen) */
+        blit_wait();
+        op_sprite_cpu(buf, b, s);
+        return;
+    }
+    const uint8_t *img = spr_img + s->link * SPR_BYTES + (uint32_t)(y0 - s->y) * 6 * SPW;
+    const uint8_t *mask = spr_mask + s->link * SPR_BYTES + (uint32_t)(y0 - s->y) * 6 * SPW;
+    op_cookie(buf, img, mask, SPW, x, obj.py0 + y0, y1 - y0);
+    add(done[b], &ndone[b], &full[b], x & ~15, (obj.py0 + y0) & 255, SPW * 8, y1 - y0);
+}
 
-int disp_compose_line(int line, uint8_t *out);           /* (disp_draw.c: colour numbers, the VDP's rules) */
+/* ---- the CPU's lines: composed eight pixels at a time, shifted into the buffer -------------------- */
 
 static void cpu_compose(uint8_t *buf, int b, int y)
 {
@@ -340,7 +412,7 @@ static void cpu_compose(uint8_t *buf, int b, int y)
     for (int k = 0; k < 6; k++) {
         uint8_t *d = l + k * OBJ_RW + b0;
         if (!s0) { memcpy(d, lp[k], SW); continue; }
-        uint8_t keep = (uint8_t)(0xFF << (8 - s0));        /* the first byte's pixels left of the picture */
+        uint8_t keep = (uint8_t)(0xFF << (8 - s0));
         d[0] = (uint8_t)((d[0] & keep) | (lp[k][0] >> s0));
         for (int i = 1; i < SW; i++) d[i] = (uint8_t)(lp[k][i - 1] << (8 - s0) | lp[k][i] >> s0);
         d[SW] = (uint8_t)((d[SW] & (0xFF >> s0)) | (uint8_t)(lp[k][SW - 1] << (8 - s0)));
@@ -350,6 +422,14 @@ static void cpu_compose(uint8_t *buf, int b, int y)
 }
 
 /* ---- the update -------------------------------------------------------------------------------- */
+
+static void mark_rows(uint8_t *rows, const struct rect *r)   /* the screen lines a buffer rectangle covers */
+{
+    for (int j = 0; j < r->h; j++) {
+        int y = (r->y + j - obj.py0) & 255;
+        if (y < SH) rows[y] = 1;
+    }
+}
 
 void obj_update(void)
 {
@@ -365,14 +445,16 @@ void obj_update(void)
         memset(a_hi, 0, sizeof a_hi);
         a_layer();
         a_ver++;
+        memset(spr_key, 0, sizeof spr_key);
+        blit_wait();
         memcpy(obj.buf[0], obj.rink, OBJ_BYTES);
         memcpy(obj.buf[1], obj.rink, OBJ_BYTES);
         ndone[0] = ndone[1] = nchg[0] = nchg[1] = nadone[0] = nadone[1] = full[0] = full[1] = 0;
         active = 1;
         obj.rebuilds++;
     } else {
-        /* the rink's cells that changed: written (by the dirty bytes), or showing a tile whose pixels changed */
-        for (int i = 0; i < 64 * 32; i++) {
+        blit_wait();                                      /* (the CPU writes the bitmaps the blits read) */
+        for (int i = 0; i < 64 * 32; i++) {               /* the rink's cells that changed */
             if (!tiles && !(i & 7) && !d->cell_dirty[1][i >> 3]) { i += 7; continue; }
             int w = (d->cell_dirty[1][i >> 3] >> (i & 7) & 1) || (tiles && tile_dirty_used(d->cell[1][i]));
             if (!w) continue;
@@ -390,64 +472,52 @@ void obj_update(void)
     obj.px0 = (512 - disp_hscroll(0, 1)) & 511;
     obj.py0 = d->vs[1] & 255;
     /* plane A stays in this buffer when the scroll and plane A are what they were when it was drawn:
-     * then it is drawn again only where something is restored or drawn over it */
+     * then it is drawn again only on the lines where something is restored or drawn */
     int stay = !full[b] && b_px0[b] == obj.px0 && b_py0[b] == obj.py0 && b_aver[b] == a_ver;
-    static struct rect clip[2 * MAXR + 80];
-    int nclip = 0;
-    /* restore what the objects covered in this buffer, and the rink's changes since it was drawn */
-    if (full[b]) memcpy(buf, obj.rink, OBJ_BYTES);
+    static uint8_t rows[SH];
+    memset(rows, !stay, sizeof rows);
+    if (full[b]) { blit_wait(); memcpy(buf, obj.rink, OBJ_BYTES); }
     else {
-        for (int i = 0; i < ndone[b]; i++) op_copy(buf, &done[b][i]);
-        for (int i = 0; i < nchg[b]; i++) op_copy(buf, &chg[b][i]);
+        for (int i = 0; i < ndone[b]; i++) { op_copy(buf, &done[b][i]); if (stay) mark_rows(rows, &done[b][i]); }
+        for (int i = 0; i < nchg[b]; i++) { op_copy(buf, &chg[b][i]); if (stay) mark_rows(rows, &chg[b][i]); }
         if (!stay) for (int i = 0; i < nadone[b]; i++) op_copy(buf, &adone[b][i]);
     }
-    if (stay) {                                           /* (the restored rectangles on the screen) */
-        for (int w = 0; w < 2; w++)
-            for (int i = 0; i < (w ? nchg[b] : ndone[b]); i++) {
-                const struct rect *r = w ? &chg[b][i] : &done[b][i];
-                int x0 = r->x & ~7, x1 = (r->x + r->w - 1) | 7;   /* (what the restore copied: whole bytes) */
-                struct rect c = { (int16_t)(x0 - obj.px0), (int16_t)((r->y - obj.py0) & 255), (int16_t)(x1 + 1 - x0), r->h };
-                if (c.x + c.w <= 0 || c.x >= 256) continue;
-                clip[nclip++] = c;
-                if (c.y + c.h > 256) { clip[nclip] = c; clip[nclip].y = (int16_t)(c.y - 256); nclip++; }   /* (wrapped round) */
-            }
-    } else nadone[b] = 0;
+    if (!stay) nadone[b] = 0;
     ndone[b] = nchg[b] = full[b] = 0;
     memset(cpu_line, 0, sizeof cpu_line);
     sprite_list();
-    if (stay)                                             /* (the sprites' areas as the recut over them reaches: whole bytes, and the shift) */
-        for (int i = 0; i < nsp; i++) { clip[nclip].x = (int16_t)(sp[i].x - 8); clip[nclip].y = (int16_t)sp[i].y; clip[nclip].w = (int16_t)(sp[i].w + 24); clip[nclip].h = (int16_t)sp[i].h; nclip++; }
-    /* the painter's order: A low, sprites low, the rink's high pixels again, A high, sprites high */
-    if (a_any_lo) {
-        if (!stay) op_a(buf, b, a_lo, a_row_lo);
-        else for (int i = 0; i < nclip; i++) op_a_clip(buf, a_lo, a_row_lo, clip[i].x, clip[i].y, clip[i].w, clip[i].h);
-    }
-    for (int i = nsp - 1; i >= 0; i--) if (!sp[i].pri) op_sprite(buf, b, &sp[i]);
-    if (a_any_lo || nsp) {
-        if (!stay) {
-            for (int y = 0; y < SH; y++)
-                if (a_row_lo[y]) { struct rect r = { (int16_t)obj.px0, (int16_t)((obj.py0 + y) & 255), 264, 1 }; op_recut(buf, &r); }
-        } else                                            /* (plane A low that stayed has its recut already; again only where it was redrawn) */
-            for (int i = 0; i < nclip; i++)
-                for (int y = clip[i].y < 0 ? 0 : clip[i].y; y < clip[i].y + clip[i].h && y < SH; y++)
-                    if (a_row_lo[y]) {
-                        int x0 = clip[i].x < 0 ? 0 : clip[i].x;
-                        struct rect r = { (int16_t)(obj.px0 + x0), (int16_t)((obj.py0 + y) & 255), (int16_t)(clip[i].x + clip[i].w - x0 + 8), 1 };
-                        op_recut(buf, &r);
-                    }
+    if (d->any_tile_dirty)                                /* the cached sprite images that show a changed tile, drawn this pass or not */
+        for (int i = 0; i < NSPR; i++) {
+            if (!spr_key[i].valid) continue;
+            struct spr k = { 0, 0, (spr_key[i].size >> 4) * 8, (spr_key[i].size & 15) * 8, 0, i, spr_key[i].e };
+            if (spr_tiles_dirty(&k)) spr_key[i].valid = 0;
+        }
+    if (stay)
         for (int i = 0; i < nsp; i++)
-            if (!sp[i].pri) {
-                int y0 = sp[i].y < 0 ? 0 : sp[i].y, y1 = sp[i].y + sp[i].h > SH ? SH : sp[i].y + sp[i].h;
-                struct rect r = { (int16_t)(obj.px0 + (sp[i].x < 0 ? 0 : sp[i].x)), (int16_t)((obj.py0 + y0) & 255), (int16_t)(sp[i].w + 8), (int16_t)(y1 - y0) };
-                if (r.h > 0) op_recut(buf, &r);
-            }
+            for (int y = sp[i].y < 0 ? 0 : sp[i].y; y < sp[i].y + sp[i].h && y < SH; y++) rows[y] = 1;
+    /* the painter's order: A low, sprites low, the rink's high pixels again, A high, sprites high */
+    op_a(buf, b, a_lo_m, a_row_lo, rows);
+    for (int i = nsp - 1; i >= 0; i--) if (!sp[i].pri) op_sprite(buf, b, &sp[i], tiles);
+    for (int i = 0; i < nsp; i++)
+        if (!sp[i].pri) {
+            int y0 = sp[i].y < 0 ? 0 : sp[i].y, y1 = sp[i].y + sp[i].h > SH ? SH : sp[i].y + sp[i].h;
+            if (y1 > y0) op_recut(buf, obj.px0 + (sp[i].x < 0 ? 0 : sp[i].x), obj.py0 + y0, sp[i].w + 16, y1 - y0);
+        }
+    for (int y = 0; y < SH; y++) {                        /* (and over plane A low on the lines it was drawn) */
+        if (!rows[y] || !a_row_lo[y]) continue;
+        int y1 = y;
+        while (y1 < SH && rows[y1] && a_row_lo[y1]) y1++;
+        op_recut(buf, obj.px0, obj.py0 + y, 272, y1 - y);
+        y = y1;
     }
-    if (a_any_hi) {
-        if (!stay) op_a(buf, b, a_hi, a_row_hi);
-        else for (int i = 0; i < nclip; i++) op_a_clip(buf, a_hi, a_row_hi, clip[i].x, clip[i].y, clip[i].w, clip[i].h);
+    op_a(buf, b, a_hi_m, a_row_hi, rows);
+    for (int i = nsp - 1; i >= 0; i--) if (sp[i].pri) op_sprite(buf, b, &sp[i], tiles);
+    int any_cpu = 0;
+    for (int y = 0; y < SH; y++) any_cpu |= cpu_line[y];
+    if (any_cpu) {
+        blit_wait();
+        for (int y = 0; y < SH; y++) if (cpu_line[y]) cpu_compose(buf, b, y);
     }
-    for (int i = nsp - 1; i >= 0; i--) if (sp[i].pri) op_sprite(buf, b, &sp[i]);
-    for (int y = 0; y < SH; y++) if (cpu_line[y]) cpu_compose(buf, b, y);
     b_px0[b] = obj.px0;
     b_py0[b] = obj.py0;
     b_aver[b] = a_ver;
@@ -463,6 +533,7 @@ void obj_leave(void) { active = 0; b_px0[0] = b_px0[1] = -1; }
  * hash both sides compute */
 void obj_window(uint8_t *const planes[6])
 {
+    blit_wait();
     int s = obj.px0 & 7;
     for (int y = 0; y < SH; y++) {
         const uint8_t *l = obj.buf[obj.shown] + ((obj.py0 + y) & 255) * OBJ_LS + (obj.px0 >> 3);

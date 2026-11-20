@@ -12,15 +12,16 @@
 #define OBJ_RH 256
 #define OBJ_LS (OBJ_RW * 6)                               /* bytes a line: six planes interleaved */
 #define OBJ_BYTES (OBJ_LS * OBJ_RH)
+#define OBJ_CHIP_BYTES (4 * OBJ_BYTES + 3 * 34 * 6 * 224 + 2 * 64 * 6 * 32 * 6)   /* everything the blitter reads or writes */
 struct obj {
-    uint8_t *rink, *rink_hi, *buf[2];                     /* the platform's (Chip RAM on the Amiga); rink_hi: one plane, OBJ_RW a line */
+    uint8_t *rink, *rink_hi, *buf[2];                     /* in the platform's block (Chip RAM on the Amiga); rink_hi: the mask, repeated a plane row */
     int shown;                                            /* the buffer to show after obj_update */
     int px0, py0;                                         /* where the screen's top left pixel lies in it */
     uint32_t updates, restored, drawn, cpu_lines, rebuilds;
 };
 extern struct obj obj;
 
-void obj_reset(uint8_t *rink, uint8_t *rink_hi, uint8_t *buf0, uint8_t *buf1);
+void obj_reset(uint8_t *chip);                            /* chip: OBJ_CHIP_BYTES, the platform's (Chip RAM on the Amiga) */
 int obj_scene(void);                                      /* the picture now is one this path draws */
 void obj_update(void);                                    /* at the game's wait, when obj_scene(): the next buffer */
 int obj_pixel(int x, int y);                              /* the shown buffer's colour number at screen pixel x, y */

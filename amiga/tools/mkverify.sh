@@ -18,6 +18,7 @@ mkdir -p "$P"
 REFS=../out/amiga/ref tools/mkadf.sh "$B" "$VERSION" "$P/nhl94-aga-v$VERSION-private-verify.adf"
 REFS=../out/amiga/ref REFEXT=i32 tools/mkadf.sh "$B" "$VERSION" "$P/nhl94-aga-v$VERSION-private-intent.adf"
 REFS=../out/amiga/ref REFEXT=p32 tools/mkadf.sh "$B" "$VERSION" "$P/nhl94-aga-v$VERSION-private-show.adf"
+REFS=../out/amiga/ref REFEXT=a32 tools/mkadf.sh "$B" "$VERSION" "$P/nhl94-aga-v$VERSION-private-audio.adf"
 tmp=$(mktemp -d)
 trap 'rm -r "$tmp"' EXIT
 head -c 524288 "$ROM" > "$tmp/nhl94.rom.1"

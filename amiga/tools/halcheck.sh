@@ -13,14 +13,14 @@ SRC=$(ls src/*.c | grep -v '^src/z80.c$')
 # shellcheck disable=SC2086
 # (ext/pulseman's VDP renderer is linked for the picture reference: a host tool only)
 cc -std=gnu11 -O2 -g -Wall -Wextra -Wshadow -Wno-unused-parameter -Werror -Isrc -Iamiga/host -Iext/pulseman/include \
-    -o build/amiga-tools/halcheck $SRC amiga/host/hal_core.c amiga/host/disp_core.c amiga/host/disp_draw.c amiga/host/disp_obj.c amiga/tools/halcheck.c \
+    -o build/amiga-tools/halcheck $SRC amiga/host/hal_core.c amiga/host/disp_core.c amiga/host/disp_draw.c amiga/host/disp_obj.c amiga/host/blit.c amiga/tools/halcheck.c \
     ext/pulseman/src/vdp/render.c ext/pulseman/src/vdp/vdp.c
 S=tools/oracle/scripts
 fail=0
 check() {   # name frames [script]
     local g=out/golden/$1.golden
     [ -f "$g" ] || { echo "$1: no $g (make golden)"; fail=1; return; }
-    ./build/amiga-tools/halcheck -o "out/amiga/ref/$1.h32" -i "out/amiga/ref/$1.i32" -p "out/amiga/ref/$1.p32" "$ROM" "$g" "$(( $2 - 1 ))" ${3:+"$S/$3"} || fail=1
+    ./build/amiga-tools/halcheck -o "out/amiga/ref/$1.h32" -i "out/amiga/ref/$1.i32" -p "out/amiga/ref/$1.p32" -a "out/amiga/ref/$1.a32" "$ROM" "$g" "$(( $2 - 1 ))" ${3:+"$S/$3"} || fail=1
 }
 check attract 7200
 check full_game 16000 full_game_30s.txt
