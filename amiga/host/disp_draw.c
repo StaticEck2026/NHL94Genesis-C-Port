@@ -433,12 +433,18 @@ void draw_update(void)
                 if (w1 > w0 || disp_hscroll(y, 0) != last_hs[y][0]) { mark_span(y, 0, d->width); continue; }
                 /* (no window on the line, A's horizontal scroll the same: the bytes where A had or now has a pixel) */
                 int pw = d->plane_w, pmask = pw * 8 - 1, vmask = d->plane_h * 8 - 1, hs = disp_hscroll(y, 0);
-                int po = (y + last_vs[0]) & vmask, pn = (y + d->vs[0]) & vmask;
+                int po = (y + last_vs[0]) & vmask, pn = (y + d->vs[0]) & vmask, ro_ = po & 7, rn_ = pn & 7;
                 const uint16_t *ro = &d->cell[0][(po >> 3) * pw], *rn = &d->cell[0][(pn >> 3) * pw];
-                for (int bx = 0; bx < d->width / 8; bx++) {
-                    int px = (bx * 8 - hs) & pmask;
-                    if (b_opaque(ro, pw, px, po & 7) || b_opaque(rn, pw, px, pn & 7)) mark_span(y, bx * 8, 8);
+                int px0 = (-hs) & pmask, c0 = px0 >> 3, sh = px0 & 7, cells = d->width / 8 + 1, any = 0;
+                uint8_t op[42];                           /* (each visible cell's row, old or new, has a pixel: one lookup a cell) */
+                for (int i = 0; i < cells; i++) {
+                    unsigned eo = ro[(c0 + i) & (pw - 1)], en = rn[(c0 + i) & (pw - 1)];
+                    op[i] = (uint8_t)((d->tile[eo & 0x7FF][(eo & 0x1000) ? 7 - ro_ : ro_] | d->tile[en & 0x7FF][(en & 0x1000) ? 7 - rn_ : rn_]) != 0);
+                    any |= op[i];
                 }
+                if (!any) continue;
+                for (int bx = 0; bx < d->width / 8; bx++)
+                    if (op[bx] || (sh && op[bx + 1])) mark_span(y, bx * 8, 8);
             }
             for (int y = 0; y < DRAW_LINES; y++)          /* (and any line whose horizontal scroll changed) */
                 hs_marks(y);

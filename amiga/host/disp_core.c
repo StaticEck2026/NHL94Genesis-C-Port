@@ -241,6 +241,12 @@ void disp_vram_block(uint16_t a, const uint8_t *src, uint32_t words)
     if (a & 1) { for (uint32_t k = 0; k < 2 * words; k++) put((uint16_t)(a + k), src[k]); return; }
     for (; words; words--, src += 2, a = (uint16_t)(a + 2)) {
         uint8_t k = disp.special[a >> 6];
+        if (k == 4) {                                     /* the scroll table: the run of it that is the same as before skipped at once */
+            uint32_t off = (uint16_t)(a - disp.hscroll), m = 0;
+            while (m < words && off + 2 * m + 1 < 0x380 && disp.special[(uint16_t)(a + 2 * m) >> 6] == 4
+                   && disp.hsc[off + 2 * m] == src[2 * m] && disp.hsc[off + 2 * m + 1] == src[2 * m + 1]) m++;
+            if (m) { words -= m - 1; src += 2 * (m - 1); a = (uint16_t)(a + 2 * (m - 1)); continue; }
+        }
         if (!k) tile_word(a, (uint16_t)(src[0] << 8 | src[1]));
         else if (k == 2) sprite_word(a, (uint16_t)(src[0] << 8 | src[1]));
         else if (k == 1) cell_word(a, (uint16_t)(src[0] << 8 | src[1]));
