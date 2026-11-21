@@ -60,7 +60,13 @@ void disp_vram_long(uint16_t a, uint32_t v);
 void disp_vram_block(uint16_t a, const uint8_t *src, uint32_t words);
 void disp_cartridge(const uint8_t *rom, uint32_t size);
 extern int disp_any_stale;                /* some tiles of the sprite table's area are behind VRAM (made again when read: below) */
-void disp_unstale_range(unsigned t0, unsigned n);   /* before a sprite's tiles are read */
+extern unsigned disp_stale_lo, disp_stale_hi;
+void disp_unstale_range_slow(unsigned t0, unsigned n);
+static inline void disp_unstale_range(unsigned t0, unsigned n)   /* before a sprite's tiles are read (two comparisons when they are not near the stale ones) */
+{
+    if (disp_any_stale && t0 <= disp_stale_hi && t0 + n > disp_stale_lo) disp_unstale_range_slow(t0, n);
+    else if (disp_any_stale && t0 + n > DISP_TILES) disp_unstale_range_slow(t0, n);   /* (round 2048) */
+}
 void disp_unstale_used(void);                       /* before the cells' tiles are read (an update's start) */   /* the cartridge image: tile uploads from it use its tiles converted once */
 void disp_vram_fill(uint16_t a, uint8_t b, uint32_t n, uint8_t step);
 void disp_vram_copy(uint16_t a, uint16_t src, uint32_t n, uint8_t step);

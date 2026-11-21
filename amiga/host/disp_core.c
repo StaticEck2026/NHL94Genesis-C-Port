@@ -75,6 +75,7 @@ static uint8_t vraw[0x10000];
  * changes it: a write to it, a VRAM read, a cell that names it (uses), a sprite whose tiles take it in */
 static uint8_t tstale[DISP_TILES / 8];
 int disp_any_stale;
+unsigned disp_stale_lo = DISP_TILES, disp_stale_hi;       /* the stale tiles lie in [lo, hi] (a sprite's tiles outside it: nothing to do) */
 static void refresh_tile(unsigned t)
 {
     const uint8_t *p = &vraw[t << 5];
@@ -88,20 +89,18 @@ static void refresh_tile(unsigned t)
     tstale[t >> 3] &= (uint8_t)~(1 << (t & 7));
 }
 static inline void unstale(unsigned t) { if (disp_any_stale && (tstale[t >> 3] >> (t & 7) & 1)) refresh_tile(t); }
-void disp_unstale_range(unsigned t0, unsigned n)          /* (a sprite's tiles: t0 on, n of them, round 2048) */
+void disp_unstale_range_slow(unsigned t0, unsigned n)     /* (a sprite's tiles: t0 on, n of them, round 2048) */
 {
-    if (!disp_any_stale) return;
     for (unsigned i = 0; i < n; i++) unstale((t0 + i) & (DISP_TILES - 1));
 }
 void disp_unstale_used(void)                              /* the stale tiles a cell names */
 {
     if (!disp_any_stale) return;
     int left = 0;
-    for (unsigned i = 0; i < DISP_TILES / 8; i++) {
-        if (!tstale[i]) continue;
-        for (unsigned j = 0; j < 8; j++) if (tstale[i] >> j & 1) { if (disp.uses[i * 8 + j]) refresh_tile(i * 8 + j); else left = 1; }
-    }
+    for (unsigned t = disp_stale_lo; t <= disp_stale_hi && t < DISP_TILES; t++)
+        if (tstale[t >> 3] >> (t & 7) & 1) { if (disp.uses[t]) refresh_tile(t); else left = 1; }
     disp_any_stale = left;
+    if (!left) { disp_stale_lo = DISP_TILES; disp_stale_hi = 0; }
 }
 
 void disp_reset(void)
@@ -110,6 +109,7 @@ void disp_reset(void)
     memset(vraw, 0, sizeof vraw);
     memset(tstale, 0, sizeof tstale);
     disp_any_stale = 0;
+    disp_stale_lo = DISP_TILES; disp_stale_hi = 0;
     if (!c2p[255]) c2p_make();
     layout();
     recount();
@@ -235,6 +235,8 @@ static void sprite_word(uint16_t a, uint16_t w)
         unsigned t = (unsigned)(a >> 5);
         tstale[t >> 3] |= (uint8_t)(1 << (t & 7));
         disp_any_stale = 1;
+        if (t < disp_stale_lo) disp_stale_lo = t;
+        if (t > disp_stale_hi) disp_stale_hi = t;
         return;
     }
     tile_word(a, w);
