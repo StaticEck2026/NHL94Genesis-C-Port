@@ -29,7 +29,7 @@ static int8_t *square, *noise, *silence;
 struct fm { int on, patch, att, env, phase, voice; uint16_t a4a0; uint32_t age; uint16_t pitch_for, per; int k; };   /* (the pitch worked out for a4a0 pitch_for) */
 static struct fm fm[7];                                   /* by the command's channel number e: 0-2 and 4-6 */
 static struct { uint16_t tone[4]; uint8_t att[4]; int latch; int voice[4]; } psg;
-static struct { const int8_t *start, *loop; uint32_t start_len, loop_len; uint16_t per; int on, voice, fresh; } pcm;
+static struct { const int8_t *start, *loop; uint32_t start_len, loop_len; uint16_t per; int on, voice, fresh, held; } pcm;
 static uint32_t now;
 static const uint8_t *z80;
 
@@ -152,6 +152,17 @@ static const int8_t *pcm_take(uint32_t addr, uint32_t *len)
     return s;
 }
 
+/* the relay's loop: about 120 Z80 cycles a byte output, the rate byte's carries advancing the sample;
+ * rate 0 holds the sample where it is (the DAC keeps one value: silence), which is how the game stops
+ * PCM (StopPCMChannel) */
+static uint16_t pcm_period(uint8_t rate)
+{
+    if (!rate) return 0;
+    uint32_t hz = 3579545u / 120u * rate / 256u;
+    uint32_t per = PAULA_CLOCK / (hz ? hz : 1);
+    return (uint16_t)(per < 124 ? 124 : per > 65535 ? 65535 : per);
+}
+
 void sound_restart(const uint8_t *z)
 {
     z80 = z;
@@ -159,13 +170,10 @@ void sound_restart(const uint8_t *z)
     uint32_t e = (uint32_t)z[0x26] << 16 | (uint32_t)z[0x27] << 8 | z[0x28];
     pcm.start = pcm_take(a & 0xFFFFF, &pcm.start_len);
     pcm.loop = pcm_take(e & 0xFFFFF, &pcm.loop_len);
-    /* the relay's loop: about 120 Z80 cycles a byte output, the rate byte's carries advancing the sample */
-    uint32_t rate = z[0x8E] ? z[0x8E] : 1;
-    uint32_t hz = 3579545u / 120u * rate / 256u;
-    pcm.per = (uint16_t)(PAULA_CLOCK / (hz ? hz : 1));
-    if (pcm.per < 124) pcm.per = 124;
+    pcm.per = pcm_period(z[0x8E]);
     pcm.on = 1;
     pcm.fresh = 1;
+    pcm.held = 0;
 }
 
 void sound_reset(int running) { if (!running) pcm.on = 0; }
@@ -209,7 +217,16 @@ static int fm_level(const struct fm *c) { int a = c->att + c->env; return a > 12
 void sound_frame(void)
 {
     for (int i = 0; i < 4; i++) paula[i].restart = 0;
-    /* PCM: channel 3 while it plays */
+    /* PCM: channel 3 while it plays. The rate byte is read every pass, as the relay reads it every
+     * sample: 0 stops the sound (the game's StopPCMChannel), another value is a new pitch */
+    int held = 0;
+    if (pcm.on && z80) {                                  /* (rate 0 holds the sample, silent: a later rate goes on with it) */
+        uint16_t per = pcm_period(z80[0x8E]);
+        held = !per;
+        if (per && per != pcm.per) { pcm.per = per; if (owner[3] == 20) paula[3].per = per; }
+        pcm.held = held ? pcm.held + 1 : 0;
+        if (pcm.held > 3) pcm.on = 0;                     /* (stopped: channel 3 back to FM and the PSG) */
+    }
     if (pcm.on) {
         if (owner[3] && owner[3] != 20) {
             if (owner[3] <= 7) fm[owner[3] - 1].voice = -2; else if (owner[3] < 20) psg.voice[owner[3] - 10] = -1;
@@ -218,9 +235,10 @@ void sound_frame(void)
         if (pcm.fresh) {
             paula[3].ptr = pcm.start; paula[3].len = pcm.start_len;
             paula[3].loop = pcm.loop; paula[3].loop_len = pcm.loop_len;
-            paula[3].per = pcm.per; paula[3].vol = 64; paula[3].restart = 1;
+            paula[3].per = pcm.per ? pcm.per : 124; paula[3].restart = 1;
             pcm.fresh = 0;
         }
+        paula[3].vol = held ? 0 : 64;
     } else if (owner[3] == 20) { owner[3] = 0; paula[3].vol = 0; }
     /* FM: envelopes, and voices for the key ons */
     for (int e = 0; e < 7; e++) {

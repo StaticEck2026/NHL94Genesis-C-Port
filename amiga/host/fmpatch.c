@@ -61,7 +61,14 @@ int fm_render(const uint8_t *patch, int len, int8_t *out)
             for (int op = 1; op <= 4; op++) ph[op] += inc[op];
             if (lap) { acc[n] = sum; if (sum > peak) peak = sum; if (-sum > peak) peak = -sum; }
         }
-    /* to 8 bits, the peak at 127 (the level is the driver's) */
+    /* without its mean (a waveform off centre puts a step into the output each time a note starts,
+     * stops or changes level: thumps; the chip's own constant offset is not heard), then to 8 bits,
+     * the peak at 127 (the level is the driver's) */
+    int32_t mean = 0;
+    for (int n = 0; n < len; n++) mean += acc[n];
+    mean /= len;
+    peak = 0;
+    for (int n = 0; n < len; n++) { acc[n] -= mean; if (acc[n] > peak) peak = acc[n]; if (-acc[n] > peak) peak = -acc[n]; }
     for (int n = 0; n < len; n++) out[n] = peak ? (int8_t)((acc[n] * 127) / peak) : 0;
     return peak;
 }
