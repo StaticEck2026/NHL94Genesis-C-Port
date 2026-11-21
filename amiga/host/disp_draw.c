@@ -224,7 +224,7 @@ static inline uint32_t tile_row(unsigned e, int r)
 static inline uint32_t opaque(uint32_t v) { v |= v >> 16; v |= v >> 8; return v & 0xFF; }
 
 /* eight pixels of a cell map from plane pixel px0 on: the cells at px0 and after it in row `row` */
-static inline void fetch(const uint16_t *row, int cells_mask, int px0, int r, struct lb *o)
+static inline __attribute__((always_inline)) void fetch(const uint16_t *row, int cells_mask, int px0, int r, struct lb *o)
 {
     int s = px0 & 7, c0 = px0 >> 3;
     unsigned e0 = row[c0];
