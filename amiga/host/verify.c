@@ -126,6 +126,7 @@ static long nover;
 static int intent_on, show_on;                   /* (K->intent and K->show, beside the hooks that test them for every word) */
 static ULONG t_lines, last_vb, due;               /* (SKIP: the vblank the pass was due to start at) */
 static int due_set, paced;                       /* (D-2: the passes counted by CIA-B timer A at the Genesis rate, not by the beam) */
+static uint32_t obj_lines(void) { return (uint32_t)screen_lines(); }   /* (disp_obj.c's clock: raster lines) */
 static inline ULONG clock_now(void) { return paced ? pace_count : vb_count; }
 static uint16_t *times;
 static UBYTE *obj_chip, *win_planes, *snd_chip;
@@ -384,7 +385,7 @@ static void run_one(void)
         draw_reset(screen_plane);
         obj_chip = (UBYTE *)CALL(SysBase, LVO_AllocMem, REG(D0, OBJ_CHIP_BYTES), REG(D1, MEMF_CHIP | MEMF_CLEAR));
         win_planes = malloc(6 * DRAW_PLANE_BYTES);
-        if (obj_chip) { obj_reset(obj_chip); blit_async(1); }
+        if (obj_chip) { obj_reset(obj_chip); blit_async(1); obj_clock = obj_lines; }
         else logf_("%s: SHOW: no Chip RAM for the scrolled scene; every picture composed\n", t->name);
         was_obj = 0;
         snd_chip = (UBYTE *)CALL(SysBase, LVO_AllocMem, REG(D0, SOUND_CHIP_BYTES), REG(D1, MEMF_CHIP | MEMF_CLEAR));
@@ -452,6 +453,8 @@ static void run_one(void)
               t->name, (long)(R->draw_sum / (unsigned long long)(R->frames > 1 ? R->frames - 1 : 1)), R->draw_max, R->draw_max_frame,
               R->late, R->late_shown, R->skipped, R->slip, (unsigned long)draw.cells_drawn, (unsigned long)draw.full_updates,
               (unsigned long)obj.updates, (unsigned long)obj.rebuilds, (unsigned long)obj.cpu_lines);
+        if (obj.updates) logf_("%s: SHOW: the scrolled scene waited %lu raster lines in all for the last pass's blits at the start of its updates (%lu a pass)\n",
+                               t->name, (unsigned long)obj.wait_start, (unsigned long)(obj.wait_start / obj.updates));
     } else if (profiling) {
         K->profiling = 0;
         prof_stop();

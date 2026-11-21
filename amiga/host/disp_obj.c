@@ -12,6 +12,7 @@
 #include "blit.h"
 
 struct obj obj;
+uint32_t (*obj_clock)(void);
 #define SWMAX 40                                          /* screen bytes a line at most (320 pixels) */
 static int SW = 32, WPX = 256;                            /* this picture's: bytes a line and pixels (256 or 320) */
 #define SH 224
@@ -615,7 +616,9 @@ void obj_update(void)
         active = 1;
         obj.rebuilds++;
     } else {
+        uint32_t t0 = obj_clock ? obj_clock() : 0;
         blit_wait();                                      /* (the CPU writes the bitmaps the blits read) */
+        if (obj_clock) obj.wait_start += obj_clock() - t0;
         int run0 = -1;                                    /* the rink's cells that changed, in runs along their rows */
         for (int i = 0; i < 64 * 32; i++) {
             if (!tiles && !d->plane_dirty[1]) break;
