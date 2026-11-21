@@ -128,7 +128,8 @@ static long nover;
 static int intent_on, show_on;                   /* (K->intent and K->show, beside the hooks that test them for every word) */
 static ULONG t_lines, last_vb, due;               /* (SKIP: the vblank the pass was due to start at) */
 static int due_set, paced;
-static uint32_t draw_wait_total;                       /* (D-2: the passes counted by CIA-B timer A at the Genesis rate, not by the beam) */
+static uint32_t draw_wait_total;
+static ULONG due_first, ideal_ticks;                    /* (SKIP: the clock at the first pass, and the vblanks the passes are due: one each, or as many as their own logic took) */                       /* (D-2: the passes counted by CIA-B timer A at the Genesis rate, not by the beam) */
 static uint32_t obj_lines(void) { return (uint32_t)screen_lines(); }   /* (disp_obj.c's clock: raster lines) */
 static inline ULONG clock_now(void) { return paced ? pace_count : vb_count; }
 static uint16_t *times;
@@ -170,6 +171,7 @@ void plat_frame_done(long frame)
         if (K->skip) {
             ULONG T = (ULONG)screen_frame_lines(), f = (t1 - t_lines + T - 1) / T;
             next_due = due + (f ? f : 1);
+            ideal_ticks += f ? f : 1;
             if (clock_now() >= next_due) drawn = 0;
         }
         int objmode = obj_chip && obj_scene();
@@ -246,7 +248,7 @@ void plat_frame_done(long frame)
     if (K->profiling) prof_sample(frame + 1 >= K->prof_first && frame + 1 <= K->prof_last);
     if (show_on) {
         t_lines = screen_lines();
-        if (!due_set) { due = clock_now(); due_set = 1; }
+        if (!due_set) { due = clock_now(); due_set = 1; due_first = due; ideal_ticks = 0; }
         if (K->profile) prof_on = !K->prof_draw && frame + 1 >= K->prof_first && frame + 1 <= K->prof_last;
     }
     else t_start = eclock();
@@ -463,6 +465,11 @@ static void run_one(void)
               (unsigned long)obj.updates, (unsigned long)obj.rebuilds, (unsigned long)obj.cpu_lines);
         if (obj.updates) logf_("%s: SHOW: the scrolled scene waited %lu raster lines in all for the last pass's blits at the start of its updates (%lu a pass)\n",
                                t->name, (unsigned long)obj.wait_start, (unsigned long)(obj.wait_start / obj.updates));
+        if (K->skip) {
+            ULONG took = clock_now() - due_first;
+            logf_("%s: pace: %ld passes took %lu Genesis vblanks; the cartridge's pace (a vblank a pass, or the pass's own logic time) %lu: the game ran at %lu.%lu%% of its speed\n",
+                  t->name, R->frames, took, ideal_ticks, took ? ideal_ticks * 100u / took : 0, took ? (ideal_ticks * 1000u / took) % 10 : 0);
+        }
         logf_("%s: SHOW: waits for the blitter: %lu raster lines in blit_wait (%lu of them inside the scrolled scene's drawing), %lu with the queue full\n", t->name,
               (unsigned long)blit_wait_time, (unsigned long)draw_wait_total, (unsigned long)blit_full_time);
     } else if (profiling) {
