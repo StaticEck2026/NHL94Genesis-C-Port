@@ -342,6 +342,66 @@ void disp_planar_line(int y, uint8_t *const out[6])
     draw_line_to(y, all, disp.width / 8, out, 0, 1);
 }
 
+/* ---- the wide path: a line without sprites, the window over all of it or none of it ---------- */
+
+/* a layer's line as bytes from cell `cfirst` on (n cells): the four colour planes, the palette
+ * line's two planes, opaque and priority; one tile lookup a cell */
+#define WL (CW + 8)
+static uint8_t LA[8][WL], LB[8][WL];
+static void cells_row(const uint16_t *row, int mask, int cfirst, int n, int r, uint8_t (*L)[WL])
+{
+    for (int i = 0; i < n; i++) {
+        unsigned e = row[(cfirst + i) & mask];
+        uint32_t v = tile_row(e, r);
+        uint8_t o = (uint8_t)opaque(v);
+        L[0][i] = (uint8_t)(v >> 24); L[1][i] = (uint8_t)(v >> 16); L[2][i] = (uint8_t)(v >> 8); L[3][i] = (uint8_t)v;
+        L[4][i] = (e & 0x2000) ? o : 0;
+        L[5][i] = (e & 0x4000) ? o : 0;
+        L[6][i] = o;
+        L[7][i] = (e & 0x8000) ? 0xFF : 0;
+    }
+}
+static void shift_row(uint8_t (*L)[WL], int n, int sh)   /* each byte i: its pixels from sh on, then the next byte's (the fine scroll) */
+{
+    if (!sh) return;
+    for (int k = 0; k < 8; k++) {
+        uint8_t *l = L[k];
+        for (int i = 0; i < n; i++) l[i] = (uint8_t)(l[i] << sh | l[i + 1] >> (8 - sh));
+    }
+}
+/* -> 0 when the line is not for this path */
+static int draw_line_wide(int y, const uint8_t *want, int cw, uint8_t *const *out, uint32_t off, int w0, int w1)
+{
+    struct disp *d = &disp;
+    int width = d->width, bx0 = 0, bx1 = cw - 1;
+    while (bx0 < cw && !want[bx0]) bx0++;
+    while (bx1 > bx0 && !want[bx1]) bx1--;
+    if (bx0 >= cw) return 1;
+    int n = bx1 - bx0 + 1, pw = d->plane_w, pmask = pw * 8 - 1, vmask = d->plane_h * 8 - 1;
+    if (w0 == 0 && w1 >= width) cells_row(&d->cell[2][(y >> 3) * d->win_w], d->win_w - 1, bx0, n, y & 7, LA);
+    else if (w1 <= w0) {
+        int pya = (y + d->vs[0]) & vmask, px = (bx0 * 8 - hscroll_of(y, 0)) & pmask;
+        cells_row(&d->cell[0][(pya >> 3) * pw], pw - 1, px >> 3, n + 1, pya & 7, LA);
+        shift_row(LA, n, px & 7);
+    } else return 0;
+    int pyb = (y + d->vs[1]) & vmask, px = (bx0 * 8 - hscroll_of(y, 1)) & pmask;
+    cells_row(&d->cell[1][(pyb >> 3) * pw], pw - 1, px >> 3, n + 1, pyb & 7, LB);
+    shift_row(LB, n, px & 7);
+    int lcb = d->reg[0] & 0x20;
+    for (int i = 0; i < n; i++) {
+        int bx = bx0 + i;
+        if (!want[bx]) continue;
+        uint8_t ao = LA[6][i], apr = LA[7][i], bo = LB[6][i], bpr = LB[7][i];
+        uint8_t ahi = ao & apr, bhi = bo & bpr & (uint8_t)~ahi, alo = ao & (uint8_t)~apr & (uint8_t)~bhi;
+        uint8_t blo = bo & (uint8_t)~bpr & (uint8_t)~(ahi | bhi | alo), sa = ahi | alo, sb = bhi | blo;
+        if (!bx && lcb) sa = sb = 0;                      /* the left column blanked */
+        for (int k = 0; k < 6; k++) out[k][off + (uint32_t)bx] = (uint8_t)((LA[k][i] & sa) | (LB[k][i] & sb));
+        if (y < DRAW_LINES) covered[y][bx] = ahi == 0xFF;
+        draw.bytes_fast++;
+    }
+    return 1;
+}
+
 static void draw_line_to(int y, const uint8_t *want, int cw, uint8_t *const *out, uint32_t off, int any_sprites)
 {
     struct disp *d = &disp;
@@ -353,6 +413,7 @@ static void draw_line_to(int y, const uint8_t *want, int cw, uint8_t *const *out
     static uint8_t any[40];
     int sprites = any_sprites;
     if (sprites && !slow) sprites = sprite_line(y, &s, any);
+    if (!slow && !sprites && draw_line_wide(y, want, cw, out, off, w0, w1)) return;
     if (slow) {
         static uint8_t line[320];
         compose_line_slow(y, line);
