@@ -28,6 +28,33 @@ Gates passed on a stock A1200 (machine, Kickstart): A-...
 Tested by, on: <date>, <log name>
 ```
 
+## 0.7.1 (2026-11-21), phases P9 and P7: the sound fixed, faster matches
+
+ADF: `nhl94-aga-v0.7.1.adf` (public; it boots the host menu, then the game). Test sheet: amiga/tests/v0.7.0.md
+(the same items; listen to the music and the crowd again).
+
+Fixed:
+* The music and the crowd: the crowd, the organ and speech never stopped when the game stopped them
+  and could crawl at a very low pitch, which made a loud rumble under everything (87% of the sound's
+  energy was below 20 Hz in an emulated run; now 0.2%, the cartridge's 0.3%). The PCM now follows the
+  game's rate the way the cartridge's sound chip does. Eight of the instruments' rendered waveforms
+  were off centre, which made a thump at every note; they are centred now.
+* When your cartridge dump is not found, the program now says where it looked (NHL94ROM:, beside the
+  program, RAM: as `nhl94.bin`) before it asks for the two ROM floppies.
+
+Changed:
+* Matches draw faster: sprites showing the same frame share one image, the rink's new rows and plane
+  A's changes take fewer blits, and the display backend skips the parts of the game's video uploads
+  that did not change. The title's logic went from 18 ms to 4 ms a pass.
+
+Known issues:
+* A match in active play is still about twice too slow for a frame on an A1200 with Fast RAM (I-9):
+  the next work. Stoppages, menus and the title fit far more often.
+* The sound is still the first version otherwise: an instrument's tone does not change over a note,
+  Paula has four voices for the Genesis's ten (notes are dropped when more play), and each voice is on
+  one side (Paula's left or right) where the cartridge is mono.
+* All of it is from emulated A1200s (D-13).
+
 ## 0.7.0 (2026-11-21), phases P6, P7 and P10: speed, the Genesis's own pace, the host menu
 
 ADFs: `nhl94-aga-v0.7.0.adf` (public; it boots the host menu, then the game). For the owner of the ROM,
