@@ -173,7 +173,8 @@ static void sprite_word(uint16_t a, uint16_t w)
     if (off < d->sprites_size) {
         uint8_t hi = (uint8_t)(w >> 8), lo = (uint8_t)w;
         if ((off & 7) < 4 && (d->sat[off] != hi || d->sat[off + 1] != lo)) { d->sat[off] = hi; d->sat[off + 1] = lo; d->sprites_dirty = 1; }
-        if (d->spr[off] != hi || d->spr[off + 1] != lo) { d->spr[off] = hi; d->spr[off + 1] = lo; d->sprites_dirty = 1; }
+        if (d->spr[off] == hi && d->spr[off + 1] == lo) return;   /* (the table mirrors VRAM: the tile cache holds these bytes already) */
+        d->spr[off] = hi; d->spr[off + 1] = lo; d->sprites_dirty = 1;
     }
     tile_word(a, w);
 }
@@ -241,6 +242,16 @@ void disp_vram_block(uint16_t a, const uint8_t *src, uint32_t words)
     if (a & 1) { for (uint32_t k = 0; k < 2 * words; k++) put((uint16_t)(a + k), src[k]); return; }
     for (; words; words--, src += 2, a = (uint16_t)(a + 2)) {
         uint8_t k = disp.special[a >> 6];
+        if (k == 2) {                                     /* the sprite table: the run of it that is the same as before (and as latched) skipped at once */
+            uint32_t off = (uint16_t)(a - disp.sprites), m = 0;
+            while (m < words && off + 2 * m + 1 < disp.sprites_size && disp.special[(uint16_t)(a + 2 * m) >> 6] == 2) {
+                uint32_t o = off + 2 * m;
+                if (disp.spr[o] != src[2 * m] || disp.spr[o + 1] != src[2 * m + 1]) break;
+                if ((o & 7) < 4 && (disp.sat[o] != src[2 * m] || disp.sat[o + 1] != src[2 * m + 1])) break;
+                m++;
+            }
+            if (m) { words -= m - 1; src += 2 * (m - 1); a = (uint16_t)(a + 2 * (m - 1)); continue; }
+        }
         if (k == 4) {                                     /* the scroll table: the run of it that is the same as before skipped at once */
             uint32_t off = (uint16_t)(a - disp.hscroll), m = 0;
             while (m < words && off + 2 * m + 1 < 0x380 && disp.special[(uint16_t)(a + 2 * m) >> 6] == 4
