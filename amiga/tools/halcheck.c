@@ -350,6 +350,15 @@ void plat_frame_done(long frame)
                 if (ln[x] != obj_pixel(x, y)) { printf("diff frame %ld at %d,%d: want %d, got %d (px0 %d py0 %d)\n", frame, x, y, ln[x], obj_pixel(x, y), obj.px0, obj.py0); shown++; }
         }
     }
+    if (getenv("HALCHECK_LAYERDUMP") && atol(getenv("HALCHECK_LAYERDUMP")) == frame) {   /* (a frame's layers, line by line: A opaque, A high, B opaque, B high, A's and B's scroll) */
+        static uint8_t pa[320], pb[320];
+        for (int y = 0; y < 224; y++) {
+            disp_layers_line(y, pa, pb);
+            int ao = 0, ah = 0, bo = 0, bh = 0;
+            for (int x = 0; x < disp.width; x++) { ao += (pa[x] & 63) != 0; ah += (pa[x] & 64) != 0; bo += (pb[x] & 63) != 0; bh += (pb[x] & 64) != 0; }
+            printf("L %d %d %d %d %d %d %d\n", y, ao, ah, bo, bh, disp_hscroll(y, 0), disp_hscroll(y, 1));
+        }
+    }
     if (getenv("HALCHECK_LAYERS")) {                      /* HALCHECK_LAYERS=FILE: each frame's colours of plane A (and window) and of plane B, and how they meet */
         static FILE *lf;
         if (!lf) lf = fopen(getenv("HALCHECK_LAYERS"), "w");

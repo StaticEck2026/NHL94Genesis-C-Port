@@ -22,6 +22,11 @@ struct draw draw;
 static uint8_t dirty[DRAW_LINES][CW];                    /* the line bytes to draw again */
 static uint8_t line_dirty[DRAW_LINES];                   /* a byte of the line is marked */
 static uint16_t last_hs[DRAW_LINES][2], last_vs[2];      /* the scroll each line was drawn with */
+/* a line byte whose plane A (or window) pixels, when it was last drawn, were all opaque and all high
+ * priority: plane B cannot show there, so a change of B's scroll alone does not draw it again (the
+ * title's wipe scrolls B line by line under the window). Any change to A marks the byte, which
+ * draws it and sets this again */
+static uint8_t covered[DRAW_LINES][CW];
 static struct { int16_t x, y, w, h; } box[2][80];        /* the sprites' places on screen: this update's and the last's */
 static int boxes[2], first = 1;
 static uint8_t rev[256];                                  /* a byte's bits in the other order (a horizontally flipped tile) */
@@ -271,6 +276,33 @@ static inline void take(const struct lb *l, uint32_t m, uint32_t *c, uint32_t *p
 
 /* ---- the update ------------------------------------------------------------------------------ */
 
+static inline int b_opaque(const uint16_t *row, int pw, int px, int r)   /* a plane's 8 pixels from px of a line (its cell row, pixel row r): any opaque */
+{
+    int c0 = (px >> 3) & (pw - 1);
+    unsigned e = row[c0];
+    if (disp.tile[e & 0x7FF][(e & 0x1000) ? 7 - r : r]) return 1;
+    if (!(px & 7)) return 0;
+    e = row[(c0 + 1) & (pw - 1)];
+    return disp.tile[e & 0x7FF][(e & 0x1000) ? 7 - r : r] != 0;
+}
+
+/* a line whose horizontal scroll changed: plane A's moves the whole line; plane B's only the bytes
+ * where B had or now has a pixel, and that plane A does not cover */
+static void hs_marks(int y)
+{
+    struct disp *d = &disp;
+    if (disp_hscroll(y, 0) != last_hs[y][0]) { mark_span(y, 0, d->width); return; }
+    int nh = disp_hscroll(y, 1), oh = last_hs[y][1];
+    if (nh == oh) return;
+    int pw = d->plane_w, pmask = pw * 8 - 1, pyb = (y + d->vs[1]) & (d->plane_h * 8 - 1), r = pyb & 7;
+    const uint16_t *row = &d->cell[1][(pyb >> 3) * pw];
+    for (int bx = 0; bx < d->width / 8; bx++) {
+        if (covered[y][bx]) continue;
+        int x = bx * 8;
+        if (b_opaque(row, pw, (x - oh) & pmask, r) || b_opaque(row, pw, (x - nh) & pmask, r)) mark_span(y, x, 8);
+    }
+}
+
 /* the sprites' boxes on screen now, and whether any uses a tile whose pixels changed */
 static int sprite_boxes(int which)
 {
@@ -331,6 +363,7 @@ static void draw_line_to(int y, const uint8_t *want, int cw, uint8_t *const *out
                 for (int x = 0; x < 8; x++) b |= ((line[bx * 8 + x] >> k) & 1) << (7 - x);
                 out[k][off + (uint32_t)bx] = (uint8_t)b;
             }
+            if (y < DRAW_LINES) covered[y][bx] = 0;
             draw.bytes_slow++;
         }
         return;
@@ -360,6 +393,7 @@ static void draw_line_to(int y, const uint8_t *want, int cw, uint8_t *const *out
         m = a.o & ~a.pr & ~sel & 0xFF; take(&a, m, &c, &p4, &p5); sel |= m;
         m = b.o & ~b.pr & ~sel & 0xFF; take(&b, m, &c, &p4, &p5);
         if (!bx && lcb) c = p4 = p5 = 0;                  /* the left column blanked */
+        if (y < DRAW_LINES) covered[y][bx] = (a.o & a.pr & 0xFF) == 0xFF;
         out[0][off + (uint32_t)bx] = (uint8_t)(c >> 24);
         out[1][off + (uint32_t)bx] = (uint8_t)(c >> 16);
         out[2][off + (uint32_t)bx] = (uint8_t)(c >> 8);
@@ -395,13 +429,22 @@ void draw_update(void)
             for (int y = 0; y < DRAW_LINES; y++) {
                 int w0, w1;
                 window_span(y, &w0, &w1);
-                if (!(w0 == 0 && w1 >= d->width)) mark_span(y, 0, d->width);
+                if (w0 == 0 && w1 >= d->width) continue;
+                if (w1 > w0 || disp_hscroll(y, 0) != last_hs[y][0]) { mark_span(y, 0, d->width); continue; }
+                /* (no window on the line, A's horizontal scroll the same: the bytes where A had or now has a pixel) */
+                int pw = d->plane_w, pmask = pw * 8 - 1, vmask = d->plane_h * 8 - 1, hs = disp_hscroll(y, 0);
+                int po = (y + last_vs[0]) & vmask, pn = (y + d->vs[0]) & vmask;
+                const uint16_t *ro = &d->cell[0][(po >> 3) * pw], *rn = &d->cell[0][(pn >> 3) * pw];
+                for (int bx = 0; bx < d->width / 8; bx++) {
+                    int px = (bx * 8 - hs) & pmask;
+                    if (b_opaque(ro, pw, px, po & 7) || b_opaque(rn, pw, px, pn & 7)) mark_span(y, bx * 8, 8);
+                }
             }
             for (int y = 0; y < DRAW_LINES; y++)          /* (and any line whose horizontal scroll changed) */
-                if (disp_hscroll(y, 0) != last_hs[y][0] || disp_hscroll(y, 1) != last_hs[y][1]) mark_span(y, 0, d->width);
+                hs_marks(y);
         } else
             for (int y = 0; y < DRAW_LINES; y++)
-                if (disp_hscroll(y, 0) != last_hs[y][0] || disp_hscroll(y, 1) != last_hs[y][1]) mark_span(y, 0, d->width);
+                hs_marks(y);
     }
     if (all || d->scroll_dirty) {
         for (int y = 0; y < DRAW_LINES; y++) { last_hs[y][0] = disp_hscroll(y, 0); last_hs[y][1] = disp_hscroll(y, 1); }
