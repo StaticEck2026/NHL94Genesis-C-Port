@@ -351,10 +351,31 @@ static void mark_lines(uint8_t *rows, int y0, int y1, int x0, int x1)   /* scree
     }
 }
 
+/* the cuts of plane A since the buffer was last drawn whole, for their restore when it is drawn whole
+ * again: kept one by one up to ABOX_AT, then as one box (in lines from the buffer's top line as it was
+ * drawn: they wrap at 256); a box restores a little more, a long list cost a blit and an interrupt each
+ * (hundreds after a while with the rink still, all restored at its next scroll step) */
+#define ABOX_AT 16
+static struct { int x0, y0, x1, y1, on; } abox[2];
+static void abox_take(int b, int x, int y, int w, int h)
+{
+    int sy = (y - obj.py0) & 255;
+    if (!abox[b].on) { abox[b].x0 = x; abox[b].y0 = sy; abox[b].x1 = x + w; abox[b].y1 = sy + h; abox[b].on = 1; return; }
+    if (x < abox[b].x0) abox[b].x0 = x;
+    if (sy < abox[b].y0) abox[b].y0 = sy;
+    if (x + w > abox[b].x1) abox[b].x1 = x + w;
+    if (sy + h > abox[b].y1) abox[b].y1 = sy + h;
+}
 static void add_a(int b, int x, int y, int w, int h)      /* (a cut of plane A, for its restore later; the same one twice is kept once) */
 {
     for (int i = 0; i < nadone[b]; i++)
         if (adone[b][i].x == x && adone[b][i].y == y && adone[b][i].w == w && adone[b][i].h == h) return;
+    if (abox[b].on || nadone[b] >= ABOX_AT) {
+        for (int i = 0; i < nadone[b]; i++) abox_take(b, adone[b][i].x, adone[b][i].y, adone[b][i].w, adone[b][i].h);
+        nadone[b] = 0;
+        abox_take(b, x, y, w, h);
+        return;
+    }
     add(adone[b], &nadone[b], &full[b], x, y, w, h);
 }
 
@@ -616,6 +637,7 @@ void obj_update(void)
         memcpy(obj.buf[0], obj.rink, OBJ_BYTES);
         memcpy(obj.buf[1], obj.rink, OBJ_BYTES);
         ndone[0] = ndone[1] = nchg[0] = nchg[1] = nadone[0] = nadone[1] = full[0] = full[1] = 0;
+        abox[0].on = abox[1].on = 0;
         active = 1;
         obj.rebuilds++;
     } else {
@@ -658,7 +680,13 @@ void obj_update(void)
     else {
         for (int i = 0; i < ndone[b]; i++) { op_copy(buf, &done[b][i]); if (stay) mark_rect(rows, &done[b][i]); }
         for (int i = 0; i < nchg[b]; i++) { op_copy(buf, &chg[b][i]); if (stay) mark_rect(rows, &chg[b][i]); }
-        if (!stay) for (int i = 0; i < nadone[b]; i++) op_copy(buf, &adone[b][i]);
+        if (!stay) {
+            for (int i = 0; i < nadone[b]; i++) op_copy(buf, &adone[b][i]);
+            if (abox[b].on) {                             /* (the box, at the top line this buffer was drawn with) */
+                struct rect r = { (int16_t)abox[b].x0, (int16_t)((abox[b].y0 + b_py0[b]) & 255), (int16_t)(abox[b].x1 - abox[b].x0), (int16_t)(abox[b].y1 - abox[b].y0) };
+                op_copy(buf, &r);
+            }
+        }
         else
             for (int i = 0; i < napend[b]; i++) {         /* (plane A's changed cells: the rink there again, then A cut there) */
                 struct rect r = { (int16_t)(obj.px0 + apend[b][i].x), (int16_t)((obj.py0 + apend[b][i].y) & 255), apend[b][i].w, apend[b][i].h };
@@ -667,7 +695,7 @@ void obj_update(void)
             }
     }
     napend[b] = 0;
-    if (!stay) nadone[b] = 0;
+    if (!stay) { nadone[b] = 0; abox[b].on = 0; }
     ndone[b] = nchg[b] = full[b] = 0;
     memset(cpu_line, 0, sizeof cpu_line);
     sprite_list();
