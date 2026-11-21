@@ -529,7 +529,8 @@ static const uint8_t *load_rom(const char *given)
     for (unsigned i = 0; n < 0 && i < 3; i++) n = libc_read_into(single[i], rom, ROM_SIZE + 1);
     *winptr = saved;
     if (n < 0) {                                          /* the halves: DOS asks for each disk */
-        logs("ROM: insert the disk NHL94ROMA when asked, then NHL94ROMB\n");
+        logs("ROM: no nhl94.bin in NHL94ROM:, beside the program or in RAM: (copy your cartridge dump there as nhl94.bin,\n"
+             "     or Cancel and run NHL94VFY INSTALL <your dump> TO <directory>); else insert the disk NHL94ROMA when asked, then NHL94ROMB\n");
         LONG a = libc_read_into("NHL94ROMA:nhl94.rom.1", rom, ROM_SIZE / 2);
         LONG b = a == ROM_SIZE / 2 ? libc_read_into("NHL94ROMB:nhl94.rom.2", rom + ROM_SIZE / 2, ROM_SIZE / 2 + 1) : -1;
         n = a == ROM_SIZE / 2 && b == ROM_SIZE / 2 ? (LONG)ROM_SIZE : -1;
