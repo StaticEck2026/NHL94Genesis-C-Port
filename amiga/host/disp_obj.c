@@ -27,6 +27,7 @@ static int a_ver, b_px0[2] = { -1, -1 }, b_py0[2], b_aver[2];   /* plane A's ver
 static uint8_t *a_img, *a_lo_m, *a_hi_m;                 /* plane A and the window on screen: six interleaved planes, and the masks by priority (repeated a plane row) */
 static uint8_t a_lo[SH][SWMAX], a_hi[SH][SWMAX];               /* the masks again, a byte a cell row, for the CPU */
 static int16_t a_row_lo[SH], a_row_hi[SH];               /* bytes of each line with something in the mask */
+static int a_y0[2] = { SH, SH }, a_y1[2] = { 0, 0 };      /* the lines that ever had some of plane A low (0) or high (1) since the last rebuild: [y0, y1) */
 static uint16_t a_ent[SH / 8][SWMAX];                     /* the entry each screen cell of A was drawn from */
 static struct rect apend[2][MAXR];                        /* plane A's cells changed since each buffer was drawn (screen rectangles) */
 static int napend[2];
@@ -260,6 +261,8 @@ static void a_cell(int cx, int cy, int win)
         a_row_lo[y] = (int16_t)(a_row_lo[y] + (lo != 0) - (a_lo[y][cx] != 0));
         a_hi[y][cx] = hi;
         a_lo[y][cx] = lo;
+        if (hi) { if (y < a_y0[1]) a_y0[1] = y; if (y >= a_y1[1]) a_y1[1] = y + 1; }
+        if (lo) { if (y < a_y0[0]) a_y0[0] = y; if (y >= a_y1[0]) a_y1[0] = y + 1; }
     }
 }
 
@@ -332,12 +335,12 @@ static void add_a(int b, int x, int y, int w, int h)      /* (a cut of plane A, 
 
 /* plane A of one priority over the screen lines marked in `rows` that have some of it, in bands of
  * lines, and in each band only the runs of words that have some of it within what changed */
-static void op_a(uint8_t *buf, int b, const uint8_t *mask, const uint8_t (*fast)[SWMAX], const int16_t *count, const uint8_t *rows)
+static void op_a(uint8_t *buf, int b, const uint8_t *mask, const uint8_t (*fast)[SWMAX], const int16_t *count, const uint8_t *rows, int ya, int yb)
 {
-    for (int y = 0; y < SH; y++) {
+    for (int y = ya; y < yb; y++) {
         if (!rows[y] || !count[y]) continue;
         int y1 = y, s0 = WPX, s1 = 0;
-        while (y1 < SH && rows[y1] && count[y1]) {
+        while (y1 < yb && rows[y1] && count[y1]) {
             if (row_x0[y1] < s0) s0 = row_x0[y1];
             if (row_x1[y1] > s1) s1 = row_x1[y1];
             y1++;
@@ -563,6 +566,8 @@ void obj_update(void)
         memset(a_row_hi, 0, sizeof a_row_hi);
         memset(a_lo, 0, sizeof a_lo);
         memset(a_hi, 0, sizeof a_hi);
+        a_y0[0] = a_y0[1] = SH;
+        a_y1[0] = a_y1[1] = 0;
         a_layer();
         a_ver++;
         napend[0] = napend[1] = 0;
@@ -633,7 +638,7 @@ void obj_update(void)
         for (int i = 0; i < nsp; i++)
             mark_lines(rows, sp[i].y, sp[i].y + sp[i].h, sp[i].x, sp[i].x + sp[i].w);
     /* the painter's order: A low, sprites low, the rink's high pixels again, A high, sprites high */
-    op_a(buf, b, a_lo_m, a_lo, a_row_lo, rows);
+    op_a(buf, b, a_lo_m, a_lo, a_row_lo, rows, a_y0[0], a_y1[0]);
     for (int i = nsp - 1; i >= 0; i--) if (!sp[i].pri) op_sprite(buf, b, &sp[i], tiles);
     for (int i = 0; i < nsp; i++)
         if (!sp[i].pri) {
@@ -646,14 +651,14 @@ void obj_update(void)
             op_recut(buf, x0, obj.py0 + y0, sp[i].w + 16, y1 - y0);
             mark_lines(rows, y0, y1, (x0 & ~15) - obj.px0, ((x0 + sp[i].w + 31) & ~15) - obj.px0);   /* (plane A high again where the recut went: its whole words) */
         }
-    for (int y = 0; y < SH; y++) {                        /* (and over plane A low on the lines it was drawn) */
+    for (int y = a_y0[0]; y < a_y1[0]; y++) {             /* (and over plane A low on the lines it was drawn) */
         if (!rows[y] || !a_row_lo[y]) continue;
         int y1 = y;
-        while (y1 < SH && rows[y1] && a_row_lo[y1]) { row_x0[y1] = 0; row_x1[y1] = (int16_t)WPX; y1++; }
+        while (y1 < a_y1[0] && rows[y1] && a_row_lo[y1]) { row_x0[y1] = 0; row_x1[y1] = (int16_t)WPX; y1++; }
         op_recut(buf, obj.px0, obj.py0 + y, WPX + 16, y1 - y);
         y = y1;
     }
-    op_a(buf, b, a_hi_m, a_hi, a_row_hi, rows);
+    op_a(buf, b, a_hi_m, a_hi, a_row_hi, rows, a_y0[1], a_y1[1]);
     for (int i = nsp - 1; i >= 0; i--) if (sp[i].pri) op_sprite(buf, b, &sp[i], tiles);
     int any_cpu = 0;
     for (int y = 0; y < SH; y++) any_cpu |= cpu_line[y];
