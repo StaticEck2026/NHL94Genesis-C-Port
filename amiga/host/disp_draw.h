@@ -11,7 +11,7 @@
 struct draw {
     uint8_t *plane[6];
     uint32_t cells_drawn, updates, full_updates;          /* screen cells redrawn, calls, calls that redrew everything */
-    uint32_t bytes_fast, bytes_slow;                      /* line bytes composed a plane byte at a time / a pixel at a time */
+    uint32_t bytes_fast, bytes_slow, bytes_wide;          /* line bytes composed a plane byte at a time / a pixel at a time / of those, by the wide path */
 };
 extern struct draw draw;
 

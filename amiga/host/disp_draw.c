@@ -398,6 +398,7 @@ static int draw_line_wide(int y, const uint8_t *want, int cw, uint8_t *const *ou
         for (int k = 0; k < 6; k++) out[k][off + (uint32_t)bx] = (uint8_t)((LA[k][i] & sa) | (LB[k][i] & sb));
         if (y < DRAW_LINES) covered[y][bx] = ahi == 0xFF;
         draw.bytes_fast++;
+        draw.bytes_wide++;
     }
     return 1;
 }
