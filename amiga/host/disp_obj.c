@@ -36,11 +36,7 @@ static uint8_t *spr_img, *spr_mask;                       /* the sprite images, 
 /* a slot's image: what it shows (the entry's tile, palette and flips, and the size: the priority bit
  * is not part of the picture), and the pass that last used it. Players of a team showing the same
  * frame share one image, and frames that come round again are found (they were cached by link number) */
-static struct { uint32_t key, used; uint8_t valid, rom, n; int32_t src[16]; } spr_key[NSPR];
-/* (rom: the image is of cartridge tiles, found by their offsets (disp_tsrc) with the flips, palette and
- * size in key: it never goes stale, and a frame shown again is found though its VRAM slot was
- * written in between, as the players' frames are; else the image is of VRAM tiles, found by the
- * entry, and dropped when one of its tiles changes) */
+static struct { uint32_t key, used; uint8_t valid; } spr_key[NSPR];
 static uint32_t pass_no;
 static uint8_t rev[256];
 static uint8_t rink_hi_cell[64 * 32];                     /* a rink cell has high-priority pixels */
@@ -491,6 +487,7 @@ static void spr_build(const struct spr *s, int slot)
     }
     uint32_t *di = (uint32_t *)(void *)(spr_img + slot * SPR_BYTES), *dm = (uint32_t *)(void *)(spr_mask + slot * SPR_BYTES);
     for (int i = 0, n = s->h * 6 * SPW / 4; i < n; i++) { di[i] = ti[i]; dm[i] = tm[i]; }
+    spr_key[slot].key = spr_keyof(s);
     spr_key[slot].used = pass_no;
     spr_key[slot].valid = 1;
 }
@@ -548,29 +545,17 @@ static void op_sprite(uint8_t *buf, int b, const struct spr *s, int tiles)
 {
     /* its slot: eight places from its key's hash; else the free one or the one used longest ago, once
      * the blits queued this pass are done if that one was used this pass */
-    int n = (s->w / 8) * (s->h / 8), rom = 1;
-    int32_t src[16];
-    uint32_t key;
-    for (int i = 0; i < n; i++) { src[i] = disp_tsrc[((s->e & 0x7FF) + (unsigned)i) & 0x7FF]; if (src[i] < 0) rom = 0; }
-    if (rom) {
-        key = (s->e & 0x7800u) | (uint32_t)((s->w / 8) << 4 | s->h / 8) << 16;
-        for (int i = 0; i < n; i++) key = key * 31u + (uint32_t)src[i];
-    } else key = spr_keyof(s);
+    uint32_t key = spr_keyof(s);
     int h = (int)((key * 2654435761u) >> 25) & (NSPR - 1), slot = -1, victim = -1;
     for (int p = 0; p < 8 && slot < 0; p++) {
         int i = (h + p) & (NSPR - 1);
-        if (spr_key[i].valid && spr_key[i].key == key && spr_key[i].rom == rom
-            && (!rom || (spr_key[i].n == n && !memcmp(spr_key[i].src, src, (size_t)n * sizeof src[0])))) { slot = i; spr_key[i].used = pass_no; break; }
+        if (spr_key[i].valid && spr_key[i].key == key) { slot = i; spr_key[i].used = pass_no; break; }
         if (victim < 0 || (spr_key[victim].valid && (!spr_key[i].valid || spr_key[i].used < spr_key[victim].used))) victim = i;
     }
     if (slot < 0) {
         slot = victim;
         if (spr_key[slot].valid && spr_key[slot].used == pass_no) blit_wait();
         spr_build(s, slot);
-        spr_key[slot].key = key;
-        spr_key[slot].rom = (uint8_t)rom;
-        spr_key[slot].n = (uint8_t)n;
-        if (rom) memcpy(spr_key[slot].src, src, (size_t)n * sizeof src[0]);
     }
     int y0 = s->y < 0 ? 0 : s->y, y1 = s->y + s->h > SH ? SH : s->y + s->h;
     if (y1 <= y0) return;
@@ -716,7 +701,7 @@ void obj_update(void)
     sprite_list();
     if (d->any_tile_dirty)                                /* the cached sprite images that show a changed tile, drawn this pass or not */
         for (int i = 0; i < NSPR; i++) {
-            if (!spr_key[i].valid || spr_key[i].rom) continue;   /* (cartridge images do not go stale) */
+            if (!spr_key[i].valid) continue;
             unsigned size = spr_key[i].key >> 16;
             struct spr k = { 0, 0, (int)(size >> 4) * 8, (int)(size & 15) * 8, 0, i, spr_key[i].key & 0x7FFFu };
             if (spr_tiles_dirty(&k)) spr_key[i].valid = 0;

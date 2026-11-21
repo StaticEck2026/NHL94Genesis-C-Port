@@ -64,13 +64,11 @@ static void reseed(int k)
  * is the same as before at once (the game sends the players' frames every pass, about half of them
  * unchanged). Written where the tile cache changes (put, tile_word, cell_word), so it is VRAM */
 static uint8_t vraw[0x10000];
-int32_t disp_tsrc[2048];                                  /* the cartridge tile each VRAM tile was last copied from whole, or -1 */
 
 void disp_reset(void)
 {
     memset(&disp, 0, sizeof disp);
     memset(vraw, 0, sizeof vraw);
-    memset(disp_tsrc, 0xFF, sizeof disp_tsrc);
     if (!c2p[255]) c2p_make();
     layout();
     recount();
@@ -135,7 +133,6 @@ static void put(uint16_t a, uint8_t b)
     if (now == *row) return;                              /* the same byte again changes nothing else */
     *row = now;
     vraw[a] = b;
-    disp_tsrc[a >> 5] = -1;
     d->tile_dirty[a >> 8] |= (uint8_t)(1 << ((a >> 5) & 7));
     d->any_tile_dirty = 1;
     if (off < d->sprites_size) { d->spr[off] = b; d->sprites_dirty = 1; }
@@ -172,7 +169,6 @@ static inline void tile_word(uint16_t a, uint16_t w)
     *row = now;
     vraw[a] = (uint8_t)(w >> 8);
     vraw[(uint16_t)(a + 1)] = (uint8_t)w;
-    disp_tsrc[a >> 5] = -1;
     disp.tile_dirty[a >> 8] |= (uint8_t)(1 << ((a >> 5) & 7));
     disp.any_tile_dirty = 1;
     disp.tile_bytes_written += 2;
@@ -205,7 +201,6 @@ static void cell_word(uint16_t a, uint16_t w)
     *row = now;
     vraw[a] = (uint8_t)(w >> 8);
     vraw[(uint16_t)(a + 1)] = (uint8_t)w;
-    disp_tsrc[a >> 5] = -1;
     d->tile_dirty[a >> 8] |= (uint8_t)(1 << ((a >> 5) & 7));
     d->any_tile_dirty = 1;
     int table = 0;
@@ -298,7 +293,6 @@ void disp_vram_block(uint16_t a, const uint8_t *src, uint32_t words)
                 disp.tile_bytes_written += 32;
             }
             memcpy(&vraw[a], src, 32);
-            disp_tsrc[a >> 5] = (int32_t)(src - cart);   /* (the tile is that cartridge tile now: sprite images can be found by it) */
             disp.tiles_cached++;
             src += 32;
             a = (uint16_t)(a + 32);
