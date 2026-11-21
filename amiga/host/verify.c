@@ -127,7 +127,8 @@ static uint32_t *over;                           /* the passes longer than a fra
 static long nover;
 static int intent_on, show_on;                   /* (K->intent and K->show, beside the hooks that test them for every word) */
 static ULONG t_lines, last_vb, due;               /* (SKIP: the vblank the pass was due to start at) */
-static int due_set, paced;                       /* (D-2: the passes counted by CIA-B timer A at the Genesis rate, not by the beam) */
+static int due_set, paced;
+static uint32_t draw_wait_total;                       /* (D-2: the passes counted by CIA-B timer A at the Genesis rate, not by the beam) */
 static uint32_t obj_lines(void) { return (uint32_t)screen_lines(); }   /* (disp_obj.c's clock: raster lines) */
 static inline ULONG clock_now(void) { return paced ? pace_count : vb_count; }
 static uint16_t *times;
@@ -172,8 +173,10 @@ void plat_frame_done(long frame)
             if (clock_now() >= next_due) drawn = 0;
         }
         int objmode = obj_chip && obj_scene();
+        static uint32_t draw_waits;                       /* (the blitter waits inside the drawing, against those of the check after it) */
+        uint32_t w0 = blit_wait_time;
         if (!drawn) { R->skipped++; }
-        else if (objmode) { obj_update(); was_obj = 1; }
+        else if (objmode) { obj_update(); was_obj = 1; draw_waits += blit_wait_time - w0; draw_wait_total = draw_waits; }
         else {
             if (was_obj) { obj_leave(); draw_invalidate(); was_obj = 0; }
             draw_update();
@@ -460,7 +463,8 @@ static void run_one(void)
               (unsigned long)obj.updates, (unsigned long)obj.rebuilds, (unsigned long)obj.cpu_lines);
         if (obj.updates) logf_("%s: SHOW: the scrolled scene waited %lu raster lines in all for the last pass's blits at the start of its updates (%lu a pass)\n",
                                t->name, (unsigned long)obj.wait_start, (unsigned long)(obj.wait_start / obj.updates));
-        logf_("%s: SHOW: waits for the blitter: %lu raster lines in blit_wait, %lu with the queue full\n", t->name, (unsigned long)blit_wait_time, (unsigned long)blit_full_time);
+        logf_("%s: SHOW: waits for the blitter: %lu raster lines in blit_wait (%lu of them inside the scrolled scene's drawing), %lu with the queue full\n", t->name,
+              (unsigned long)blit_wait_time, (unsigned long)draw_wait_total, (unsigned long)blit_full_time);
     } else if (profiling) {
         K->profiling = 0;
         prof_stop();
