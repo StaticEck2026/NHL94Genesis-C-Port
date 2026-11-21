@@ -277,11 +277,19 @@ static void a_changes(int tiles)
 {
     int over = 0;
     for (int cy = 0; cy < SH / 8; cy++) {
+        if (!tiles) {                                     /* (a row with nothing written in either plane: nothing to do) */
+            int any = 0;
+            const uint8_t *da = &disp.cell_dirty[0][(cy * 64) >> 3], *dw = &disp.cell_dirty[2][(cy * disp.win_w) >> 3];
+            for (int j = 0; j <= SW / 8 && !any; j++) any = da[j] | dw[j];
+            if (!any) continue;
+        }
+        int w0, w1;
+        window_span(cy * 8, &w0, &w1);                    /* (the window's columns are whole cells: once a row) */
         int run0 = -1;
         for (int cx = 0; cx <= SW; cx++) {
             int ch = 0;
             if (cx < SW) {
-                int win = in_window(cx, cy), i = win ? cy * disp.win_w + cx : cy * 64 + cx, k = win ? 2 : 0;
+                int win = cx * 8 >= w0 && cx * 8 < w1, i = win ? cy * disp.win_w + cx : cy * 64 + cx, k = win ? 2 : 0;
                 unsigned e = disp.cell[k][i];
                 int td = tiles && tile_dirty_used(e);
                 if ((disp.cell_dirty[k][i >> 3] >> (i & 7) & 1) && e != a_ent[cy][cx]) ch = 1;
