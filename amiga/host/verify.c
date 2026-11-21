@@ -82,6 +82,7 @@ struct keep {
     volatile ULONG *dbg;                        /* the debug block in Chip RAM (screen.h), for the whole run */                            /* NHL94VFY <script> ... FRAMES n: stop after n passes */
     int profile, profiling;                     /* NHL94VFY <script> PROFILE [FIRST LAST]: asked for, and running */
     int prof_logic;                             /* ... PROFILE ... LOGIC: the passes' logic only, not their drawing */
+    int prof_draw;                              /* ... PROFILE ... DRAW: the passes' drawing only */
     long prof_first, prof_last;                 /* the passes sampled (all of them when none are named) */
 };
 static struct keep *K __attribute__((section(".keep")));
@@ -160,6 +161,7 @@ void plat_frame_done(long frame)
         screen_dbg[5] = 1;
         ULONG t1 = screen_lines();
         if (K->prof_logic) prof_on = 0;                   /* (LOGIC: the drawing is not sampled) */
+        if (K->prof_draw) prof_on = frame >= K->prof_first && frame <= K->prof_last;   /* (DRAW: only the drawing) */
         /* D-18: the game's passes keep their vblanks; a pass whose next one is due already is not drawn
          * (what it changed is drawn with the next pass drawn). The next pass is due a vblank after this
          * one, or as many as its logic took (a long pass is the game's own time, as on the cartridge) */
@@ -242,7 +244,7 @@ void plat_frame_done(long frame)
     if (show_on) {
         t_lines = screen_lines();
         if (!due_set) { due = clock_now(); due_set = 1; }
-        if (K->profile) prof_on = frame + 1 >= K->prof_first && frame + 1 <= K->prof_last;
+        if (K->profile) prof_on = !K->prof_draw && frame + 1 >= K->prof_first && frame + 1 <= K->prof_last;
     }
     else t_start = eclock();
 }
@@ -584,6 +586,8 @@ LONG amiga_main(const char *args, LONG arglen)
         if (!memcmp(args + i, "SKIP", 4)) K->skip = 1;
     for (LONG i = 0; i + 5 <= arglen; i++)
         if (!memcmp(args + i, "LOGIC", 5)) K->prof_logic = 1;
+    for (LONG i = 0; i + 4 <= arglen; i++)
+        if (!memcmp(args + i, "DRAW", 4)) K->prof_draw = 1;
     for (LONG i = 0; i + 4 <= arglen; i++)
         if (!memcmp(args + i, "TIME", 4)) K->timing = 1;
     if (K->show) K->intent = 0;
