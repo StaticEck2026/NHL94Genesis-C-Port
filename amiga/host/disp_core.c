@@ -59,9 +59,15 @@ static void reseed(int k)
     for (uint32_t i = 0; i < disp.size[k] / 2; i++) disp.cell[k][i] = disp_word((uint16_t)(disp.base[k] + 2 * i));
 }
 
+/* VRAM's bytes as written, beside the planar tile cache: a DMA block into tiles only skips the run that
+ * is the same as before at once (the game sends the players' frames every pass, about half of them
+ * unchanged). Written where the tile cache changes (put, tile_word, cell_word), so it is VRAM */
+static uint8_t vraw[0x10000];
+
 void disp_reset(void)
 {
     memset(&disp, 0, sizeof disp);
+    memset(vraw, 0, sizeof vraw);
     if (!c2p[255]) c2p_make();
     layout();
     recount();
@@ -125,6 +131,7 @@ static void put(uint16_t a, uint8_t b)
     if (off < d->sprites_size && (off & 7) < 4 && d->sat[off] != b) { d->sat[off] = b; d->sprites_dirty = 1; }   /* (even when VRAM already holds the byte) */
     if (now == *row) return;                              /* the same byte again changes nothing else */
     *row = now;
+    vraw[a] = b;
     d->tile_dirty[a >> 8] |= (uint8_t)(1 << ((a >> 5) & 7));
     d->any_tile_dirty = 1;
     if (off < d->sprites_size) { d->spr[off] = b; d->sprites_dirty = 1; }
@@ -159,6 +166,8 @@ static inline void tile_word(uint16_t a, uint16_t w)
     uint32_t now = (*row & ~(0xF0F0F0F0u >> x)) | ((c2p[w >> 8] | c2p[w & 0xFF] >> 2) >> x);
     if (now == *row) return;
     *row = now;
+    vraw[a] = (uint8_t)(w >> 8);
+    vraw[(uint16_t)(a + 1)] = (uint8_t)w;
     disp.tile_dirty[a >> 8] |= (uint8_t)(1 << ((a >> 5) & 7));
     disp.any_tile_dirty = 1;
     disp.tile_bytes_written += 2;
@@ -189,6 +198,8 @@ static void cell_word(uint16_t a, uint16_t w)
     uint32_t now = (*row & ~(0xF0F0F0F0u >> x)) | ((c2p[w >> 8] | c2p[w & 0xFF] >> 2) >> x);
     if (now == *row) return;
     *row = now;
+    vraw[a] = (uint8_t)(w >> 8);
+    vraw[(uint16_t)(a + 1)] = (uint8_t)w;
     d->tile_dirty[a >> 8] |= (uint8_t)(1 << ((a >> 5) & 7));
     d->any_tile_dirty = 1;
     int table = 0;
@@ -242,6 +253,11 @@ void disp_vram_block(uint16_t a, const uint8_t *src, uint32_t words)
     if (a & 1) { for (uint32_t k = 0; k < 2 * words; k++) put((uint16_t)(a + k), src[k]); return; }
     for (; words; words--, src += 2, a = (uint16_t)(a + 2)) {
         uint8_t k = disp.special[a >> 6];
+        if (!k) {                                         /* tiles only: the run that is the same as VRAM holds skipped at once */
+            uint32_t m = 0;
+            while (m < words && !disp.special[(uint16_t)(a + 2 * m) >> 6] && vraw[(uint16_t)(a + 2 * m)] == src[2 * m] && vraw[(uint16_t)(a + 2 * m + 1)] == src[2 * m + 1]) m++;
+            if (m) { words -= m - 1; src += 2 * (m - 1); a = (uint16_t)(a + 2 * (m - 1)); continue; }
+        }
         if (k == 2) {                                     /* the sprite table: the run of it that is the same as before (and as latched) skipped at once */
             uint32_t off = (uint16_t)(a - disp.sprites), m = 0;
             while (m < words && off + 2 * m + 1 < disp.sprites_size && disp.special[(uint16_t)(a + 2 * m) >> 6] == 2) {
