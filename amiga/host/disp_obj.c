@@ -316,8 +316,10 @@ static void mark_lines(uint8_t *rows, int y0, int y1, int x0, int x1)   /* scree
 {
     if (x0 < 0) x0 = 0;
     if (x1 > WPX) x1 = WPX;
-    if (y0 < 0) y0 = 0;
-    if (y1 > SH) y1 = SH;
+    /* (only the lines that have plane A read the marks: op_a and the recut over A low) */
+    int ya = a_y0[0] < a_y0[1] ? a_y0[0] : a_y0[1], yb = a_y1[0] > a_y1[1] ? a_y1[0] : a_y1[1];
+    if (y0 < ya) y0 = ya;
+    if (y1 > yb) y1 = yb;
     if (x1 <= x0) return;
     for (int y = y0; y < y1; y++) {
         if (!rows[y]) { rows[y] = 1; row_x0[y] = (int16_t)x0; row_x1[y] = (int16_t)x1; continue; }
