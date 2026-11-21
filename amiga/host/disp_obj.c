@@ -40,6 +40,14 @@ static struct { uint32_t key, used; uint8_t valid; } spr_key[NSPR];
 static uint32_t pass_no;
 static uint8_t rev[256];
 static uint8_t rink_hi_cell[64 * 32];                     /* a rink cell has high-priority pixels */
+static uint64_t rink_hi_row[32];                          /* the same, a bit a column, a cell row each */
+static inline uint64_t col_mask(int c0, int c1)           /* the bits of columns c0 to c1, round 64 */
+{
+    int n = c1 - c0 + 1, s = c0 & 63;
+    if (n >= 64) return ~0ull;
+    uint64_t m = (1ull << n) - 1;
+    return (m << s) | (s ? m >> (64 - s) : 0);
+}
 
 void obj_reset(uint8_t *chip)
 {
@@ -127,6 +135,7 @@ static void rink_run(int cy, int cx0, int cx1)
             }
         }
         rink_hi_cell[i] = any != 0;
+        if (any) rink_hi_row[cy] |= 1ull << cx; else rink_hi_row[cy] &= ~(1ull << cx);
     }
     int n1 = cx0 < 40 ? (cx1 < 40 ? cx1 : 39) - cx0 + 1 : 0;
     for (int r = 0; r < 8; r++)
@@ -436,7 +445,7 @@ static void sprite_list(void)
      * limits at the end was over them when its last sprite came */
     static int16_t dcount[SH + 1], ddots[SH + 1];
     static int16_t ly0[80], ly1[80], lmask[80];
-    int nl = 0;
+    int nl = 0, lmin = SH, lmax = 0;
     memset(dcount, 0, sizeof dcount);
     memset(ddots, 0, sizeof ddots);
     nsp = 0;
@@ -450,6 +459,8 @@ static void sprite_list(void)
             dcount[l0]++; dcount[l1]--;
             ddots[l0] = (int16_t)(ddots[l0] + sw * 8); ddots[l1] = (int16_t)(ddots[l1] - sw * 8);
             ly0[nl] = (int16_t)l0; ly1[nl] = (int16_t)l1; lmask[nl] = (int16_t)(rawx == 0); nl++;
+            if (l0 < lmin) lmin = l0;
+            if (l1 > lmax) lmax = l1;
         }
         if (y < SH && y + sh * 8 > 0 && x < WPX && x + sw * 8 > 0) {
             sp[nsp].x = x; sp[nsp].y = y; sp[nsp].w = sw * 8; sp[nsp].h = sh * 8;
@@ -459,7 +470,7 @@ static void sprite_list(void)
         if (!next || next >= total) break;
         link = next;
     }
-    for (int l = 0, cnt = 0, dt = 0; l < SH; l++) {
+    for (int l = lmin, cnt = 0, dt = 0; l < lmax; l++) {   /* (the lines with sprites only: the sums are 0 before them) */
         cnt += dcount[l]; dt += ddots[l];
         if (cnt > per_line || dt > WPX) cpu_line[l] = 1;
     }
@@ -743,8 +754,9 @@ void obj_update(void)
             int y0 = sp[i].y < 0 ? 0 : sp[i].y, y1 = sp[i].y + sp[i].h > SH ? SH : sp[i].y + sp[i].h;
             if (y1 <= y0) continue;
             int x0 = obj.px0 + (sp[i].x < 0 ? 0 : sp[i].x), any = 0;
+            uint64_t cols = col_mask(x0 >> 3, (x0 + sp[i].w + 15) >> 3);   /* (its cell columns, round the rink's 64) */
             for (int cy = (obj.py0 + y0) >> 3; cy <= (obj.py0 + y1 - 1) >> 3 && !any; cy++)   /* (only where the rink has high pixels) */
-                for (int cx = x0 >> 3; cx <= (x0 + sp[i].w + 15) >> 3 && !any; cx++) any = rink_hi_cell[(cy & 31) * 64 + (cx & 63)];
+                any = (rink_hi_row[cy & 31] & cols) != 0;
             if (!any) continue;
             op_recut(buf, x0, obj.py0 + y0, sp[i].w + 16, y1 - y0);
             mark_lines(rows, y0, y1, (x0 & ~15) - obj.px0, ((x0 + sp[i].w + 31) & ~15) - obj.px0);   /* (plane A high again where the recut went: its whole words) */
