@@ -64,31 +64,15 @@ void obj_reset(uint8_t *chip)
     }
 }
 
-static int sprites_on_screen(void)                        /* any sprite of the link list on the screen */
-{
-    const struct disp *d = &disp;
-    int total = d->width == 320 ? 80 : 64, link = 0;
-    for (int seen = 0; seen < total; seen++) {
-        const uint8_t *c = d->sat + link * 8, *q = d->spr + link * 8;
-        int y = ((c[0] << 8 | c[1]) & 0x3FF) - 128, sh = (c[2] & 3) + 1, sw = ((c[2] >> 2) & 3) + 1, next = c[3] & 0x7F;
-        int x = ((q[6] << 8 | q[7]) & 0x1FF) - 128;
-        if (y < 224 && y + sh * 8 > 0 && x < d->width && x + sw * 8 > 0) return 1;
-        if (!next || next >= total) break;
-        link = next;
-    }
-    return 0;
-}
-
 int obj_scene(void)
 {
     const struct disp *d = &disp;
     if ((d->width != 256 && d->width != 320) || (d->reg[11] & 7) || d->plane_w != 64 || d->plane_h != 32 || d->vs[0]) return 0;
     if (disp_hscroll(0, 0)) return 0;
     if (d->reg[0] & 0x20) return 0;                       /* (the left column blanked: not in a match) */
-    /* a 320-pixel picture without sprites (the in-match menus) goes to the composed picture: a step of
-     * their moving background redraws only where it shows there (about 560 line bytes), where here it
-     * moves the buffer under all of plane A (about 64,000 blitted words) */
-    if (d->width == 320 && !sprites_on_screen()) return 0;
+    /* (a 320-pixel picture without sprites stays here: sent to the composed picture, a step of the menus'
+     * moving background cost 99 ms a pass there on the emulated A1200, against about 6 ms here: the
+     * composer's bookkeeping a line and its bytes are dearer than the blitter's redraw of plane A) */
     return 1;
 }
 
@@ -642,15 +626,16 @@ void obj_update(void)
         for (int i = 0; i < 64 * 32; i++) {
             if (!tiles && !d->plane_dirty[1]) break;
             int w = (d->cell_dirty[1][i >> 3] >> (i & 7) & 1) || (tiles && tile_dirty_used(d->cell[1][i]));
-            if (w) {
-                if (run0 < 0) run0 = i;
-                int x = (i & 63) * 8, y = (i >> 6) * 8;
-                for (int b = 0; b < 2; b++) {
-                    add(chg[b], &nchg[b], &full[b], x, y, 8, 8);
-                    if (x < 320) add(chg[b], &nchg[b], &full[b], x + 512, y, 8, 8);
+            if (w && run0 < 0) run0 = i;
+            if (run0 >= 0 && (!w || (i & 63) == 63)) {
+                int c0 = run0 & 63, c1 = w ? (i & 63) : (i & 63) - 1, y = (run0 >> 6) * 8, x0 = c0 * 8, x1 = (c1 + 1) * 8;
+                rink_run(run0 >> 6, c0, c1);
+                for (int b = 0; b < 2; b++) {                 /* (the run's restore: one rectangle, and its copy at 512 for the first 320 pixels) */
+                    add(chg[b], &nchg[b], &full[b], x0, y, x1 - x0, 8);
+                    if (x0 < 320) add(chg[b], &nchg[b], &full[b], x0 + 512, y, (x1 < 320 ? x1 : 320) - x0, 8);
                 }
+                run0 = -1;
             }
-            if (run0 >= 0 && (!w || (i & 63) == 63)) { rink_run(run0 >> 6, run0 & 63, w ? (i & 63) : (i & 63) - 1); run0 = -1; }
             if (!tiles && !(i & 7) && !d->cell_dirty[1][i >> 3] && run0 < 0) i += 7;
         }
         if (d->plane_dirty[0] || d->plane_dirty[2] || tiles) a_changes(tiles);
