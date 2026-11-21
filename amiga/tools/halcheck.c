@@ -492,6 +492,7 @@ int main(int argc, char **argv_in)
     rosters_retail();
     core_power_on(0);
     disp_reset();
+    disp_cartridge(rom_ptr(0), ROM_SIZE);                  /* (I-9: its tiles converted once) */
     static uint8_t planes[6][DRAW_PLANE_BYTES];
     uint8_t *const pp[6] = { planes[0], planes[1], planes[2], planes[3], planes[4], planes[5] };
     draw_reset(pp);
@@ -516,7 +517,7 @@ int main(int argc, char **argv_in)
                       (double)obj.rink_cells / n_obj, (double)obj.sprite_builds / n_obj, (double)obj.a_cells / n_obj);
     if (n_obj) printf("; words: restore %.0f, recut %.0f, plane A %.0f, sprites %.0f", (double)obj.w_restore / n_obj, (double)obj.w_recut / n_obj, (double)obj.w_a / n_obj, (double)obj.w_sprite / n_obj);
     printf(")");
-    printf(" (%u screen cells drawn in %u updates, %u of them whole screens; line bytes %u planar (%u by the wide path), %u a pixel at a time)", draw.cells_drawn, draw.updates, draw.full_updates, draw.bytes_fast, draw.bytes_wide, draw.bytes_slow);
+    printf(" (%u screen cells drawn in %u updates, %u of them whole screens; line bytes %u planar (%u by the wide path), %u a pixel at a time; %u tiles from the cartridge's converted cache)", draw.cells_drawn, draw.updates, draw.full_updates, draw.bytes_fast, draw.bytes_wide, draw.bytes_slow, disp.tiles_cached);
     if (getenv("HALCHECK_WHY")) for (int i = 0; i < 26; i++) if (disp.why[i]) printf(" why[%d]=%u", i, disp.why[i]);
     printf(" (DMAs %u, fills %u, VRAM copies %u, VRAM reads %u, sound commands %u, restarts %u, other $96 %u)\n",
            core.dmas, core.fills, core.copies, core.vram_reads, core.commands, core.restarts, core.odd_targets);

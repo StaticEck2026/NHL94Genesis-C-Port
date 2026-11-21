@@ -384,6 +384,7 @@ static void run_one(void)
         if (K->skip && !paced) logf_("%s: pacing: CIA-B timer A is not free; the passes follow the beam\n", t->name);
         if (!screen_open(K->pal, K->profile)) { logf_("%s: SHOW: not enough Chip RAM for the screen\n", t->name); R->aborted = 3; return; }
         disp_reset();
+        disp_cartridge(rom_ptr(0), ROM_SIZE);                  /* (I-9: its tiles converted once) */
         draw_reset(screen_plane);
         obj_chip = (UBYTE *)CALL(SysBase, LVO_AllocMem, REG(D0, OBJ_CHIP_BYTES), REG(D1, MEMF_CHIP | MEMF_CLEAR));
         win_planes = malloc(6 * DRAW_PLANE_BYTES);

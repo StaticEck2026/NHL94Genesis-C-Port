@@ -1,5 +1,6 @@
 /* The display backend's portable half: see disp_core.h. */
 #include <string.h>
+#include <stdlib.h>
 #include "disp_core.h"
 
 struct disp disp;
@@ -248,9 +249,57 @@ void disp_vram_word(uint16_t a, uint16_t w)
     put((uint16_t)(a + 1), (uint8_t)w);
 }
 void disp_vram_long(uint16_t a, uint32_t v) { disp_vram_word(a, (uint16_t)(v >> 16)); disp_vram_word((uint16_t)(a + 2), (uint16_t)v); }
+/* ---- the cartridge's tiles, converted once (I-9 step 1) -----------------------------------------
+ * The game uploads the players' frames from the cartridge every pass; converting them a word at a
+ * time was most of the display backend's share of a match's logic. A tile-aligned upload from the
+ * cartridge to tile-aligned VRAM takes each tile's planar rows from this cache instead, made the
+ * first time the tile is used (the same bits tile_word would make, so the result is the same) */
+static const uint8_t *cart;
+static uint32_t cart_size;
+static uint32_t *tc_block[0x100000 / 32 / 256 + 1];        /* 256 tiles (8 KB) a block, made when first needed */
+static uint8_t tc_phase[0x100000 / 32 / 256 + 1];          /* a block's tiles start at this offset in 32 (the sprite tiles are at $5DE84) */
+static uint8_t tc_made[0x100000 / 32 / 8 + 32];
+void disp_cartridge(const uint8_t *rom, uint32_t size) { cart = rom; cart_size = size > 0x100000 ? 0x100000 : size; }
+
+static const uint32_t *tile_planar(uint32_t off)          /* off: inside the cartridge, even; 0: not cached (no memory, or a block of another phase) */
+{
+    uint32_t ph = off & 31, key = off - ph, t = key >> 5, b = t >> 8;
+    if (!tc_block[b]) {
+        if (!(tc_block[b] = malloc(256 * 32))) return 0;
+        tc_phase[b] = (uint8_t)ph;
+    } else if (tc_phase[b] != ph) return 0;
+    uint32_t *rows = tc_block[b] + (t & 255) * 8;
+    if (!(tc_made[t >> 3] >> (t & 7) & 1)) {
+        const uint8_t *p = cart + off;
+        for (int r = 0; r < 8; r++, p += 4)
+            rows[r] = (c2p[p[0]] | c2p[p[1]] >> 2) | ((c2p[p[2]] | c2p[p[3]] >> 2) >> 4);
+        tc_made[t >> 3] |= (uint8_t)(1 << (t & 7));
+    }
+    return rows;
+}
+
 void disp_vram_block(uint16_t a, const uint8_t *src, uint32_t words)
 {
     if (a & 1) { for (uint32_t k = 0; k < 2 * words; k++) put((uint16_t)(a + k), src[k]); return; }
+    if (cart && src >= cart && src < cart + cart_size && !((uint32_t)(src - cart) & 1) && !(a & 31)) {
+        while (words >= 16 && !disp.special[a >> 6] && (uint32_t)(src - cart) + 32 <= cart_size) {   /* (whole tiles, in tiles-only VRAM) */
+            const uint32_t *pl = tile_planar((uint32_t)(src - cart));
+            if (!pl) break;
+            uint32_t *row = disp.tile[a >> 5];
+            if (memcmp(row, pl, 32)) {
+                memcpy(row, pl, 32);
+                disp.tile_dirty[a >> 8] |= (uint8_t)(1 << ((a >> 5) & 7));
+                disp.any_tile_dirty = 1;
+                disp.tile_bytes_written += 32;
+            }
+            memcpy(&vraw[a], src, 32);
+            disp.tiles_cached++;
+            src += 32;
+            a = (uint16_t)(a + 32);
+            words -= 16;
+        }
+        if (!words) return;
+    }
     for (; words; words--, src += 2, a = (uint16_t)(a + 2)) {
         uint8_t k = disp.special[a >> 6];
         if (!k) {                                         /* tiles only: the run that is the same as VRAM holds skipped at once */
