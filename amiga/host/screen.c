@@ -252,9 +252,16 @@ ULONG screen_lines(void)
      * interrupt is waiting behind another level 3 handler counts already */
     ULONG L = (ULONG)screen_frame_lines();
     long d = (long)v - (long)at;
-    if (d < 0) d += (long)L;
-    if (pend) n++;                                        /* (d is then the lines since that vblank: it began at the same line) */
-    return n * L + (ULONG)d;
+    if (d < -(long)L / 2) d += (long)L;                   /* (round the beam's wrap) */
+    if (pend) {                                           /* the vblank is here, its interrupt not taken: just after it */
+        n++;
+        if (d < 0) d = 0;                                 /* (the last interrupt was taken a few lines late) */
+    } else if (d < 0) d += (long)L;
+    ULONG r = n * L + (ULONG)d;
+    static ULONG last;                                    /* (never back: what is left of the interrupt's latency) */
+    if (r < last) r = last;
+    last = r;
+    return r;
 }
 
 void screen_close(void)
