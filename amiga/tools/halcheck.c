@@ -60,7 +60,7 @@ static void vput(uint16_t a, uint8_t b)
     uint32_t base = h40 ? (uint32_t)(core.reg[5] & 0x7E) << 9 : (uint32_t)(core.reg[5] & 0x7F) << 9, off = (uint32_t)a - base;
     if (a >= base && off < (h40 ? 0x280u : 0x200u) && (off & 7) < 4) refv.sat[off] = b;
 }
-static unsigned long n_words, n_block_words, n_bytes, n_fill, n_cram;   /* this frame's requests (HALCHECK_FRAMES) */
+static unsigned long n_words, n_block_words, n_bytes, n_fill, n_cram, frame_vwords;   /* this frame's requests (HALCHECK_FRAMES) */
 /* each request goes into the display intent hash (intent.h: the Amiga's reference, -i) and, for the
  * golden check, into this side's copy of VRAM */
 void plat_vram_byte(uint16_t a, uint8_t b) { intent_byte(a, b); disp_vram_byte(a, b); vput(a, b); n_bytes++; }
@@ -311,6 +311,7 @@ void plat_frame_done(long frame)
     }
     lit_before = 0;
     for (int i = 0; i < 64; i++) lit_before += core.cram[i] != 0;
+    frame_vwords = n_words + n_block_words;
     n_words = n_block_words = n_bytes = n_fill = n_cram = 0;
     saw_blank = !(core.reg[1] & 0x40);
     ram_pack(ram);
@@ -381,7 +382,8 @@ void plat_frame_done(long frame)
         if (!dl && getenv("HALCHECK_DRAWLOG")) dl = fopen(getenv("HALCHECK_DRAWLOG"), "w");
         if (dl) {
             static uint32_t lb;
-            fprintf(dl, "%ld %s %d %u %u b%u", frame, objmode ? "obj" : "draw", disp.width, draw.cells_drawn - lc, draw.full_updates - lf, blit_words - lb);
+            fprintf(dl, "%ld %s %d %u %u b%u v%lu", frame, objmode ? "obj" : "draw", disp.width, draw.cells_drawn - lc, draw.full_updates - lf, blit_words - lb,
+                    frame_vwords);
             lb = blit_words;
             for (int i = 0; i < 26; i++) if (disp.why[i] != lw[i]) fprintf(dl, " w%d:%u", i, disp.why[i] - lw[i]);
             fprintf(dl, " %06X\n", (unsigned)g.VBint);
