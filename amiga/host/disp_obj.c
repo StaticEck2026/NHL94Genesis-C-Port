@@ -18,7 +18,7 @@ static int SW = 32, WPX = 256;                            /* this picture's: byt
 #define AW 42                                             /* bytes a plane row of the plane A images: up to 320 pixels and a spare word */
 #define SPW 6                                             /* bytes a plane row of a sprite image: up to 32 pixels and a spare word */
 #define SPR_BYTES (SPW * 32 * 6)
-#define NSPR 64
+#define NSPR OBJ_SPR_SLOTS
 #define MAXR 512
 struct rect { int16_t x, y, w, h; };                     /* pixels, in the buffers' coordinates (y wraps at 256) */
 static struct rect done[2][MAXR], chg[2][MAXR], adone[2][MAXR];
@@ -31,8 +31,12 @@ static int a_y0[2] = { SH, SH }, a_y1[2] = { 0, 0 };      /* the lines that ever
 static uint16_t a_ent[SH / 8][SWMAX];                     /* the entry each screen cell of A was drawn from */
 static struct rect apend[2][MAXR];                        /* plane A's cells changed since each buffer was drawn (screen rectangles) */
 static int napend[2];
-static uint8_t *spr_img, *spr_mask;                       /* the sprite images, NSPR of them by link number */
-static struct { uint16_t e; uint8_t size, valid; } spr_key[NSPR];
+static uint8_t *spr_img, *spr_mask;                       /* the sprite images, NSPR slots of them */
+/* a slot's image: what it shows (the entry's tile, palette and flips, and the size: the priority bit
+ * is not part of the picture), and the pass that last used it. Players of a team showing the same
+ * frame share one image, and frames that come round again are found (they were cached by link number) */
+static struct { uint32_t key, used; uint8_t valid; } spr_key[NSPR];
+static uint32_t pass_no;
 static uint8_t rev[256];
 static uint8_t rink_hi_cell[64 * 32];                     /* a rink cell has high-priority pixels */
 
@@ -418,7 +422,9 @@ static void sprite_list(void)
 /* a sprite's image and mask in its slot: its tiles (down the columns first), flips and palette line;
  * each of its rows written whole (the bytes right of the sprite and the spare word zero), the rows
  * below it not touched (no blit reads them) */
-static void spr_build(const struct spr *s)
+static inline uint32_t spr_keyof(const struct spr *s) { return (s->e & 0x7FFFu) | (uint32_t)((s->w / 8) << 4 | s->h / 8) << 16; }
+
+static void spr_build(const struct spr *s, int slot)
 {
     int sw = s->w / 8, sh = s->h / 8;
     static uint32_t ti[SPR_BYTES / 4], tm[SPR_BYTES / 4];  /* (made in Fast RAM, then copied a long at a time: Chip RAM byte writes are slow) */
@@ -439,11 +445,11 @@ static void spr_build(const struct spr *s)
         }
         for (int k = 0; k < 6; k++) memcpy(pm + k * SPW, m6, SPW);
     }
-    uint32_t *di = (uint32_t *)(void *)(spr_img + s->link * SPR_BYTES), *dm = (uint32_t *)(void *)(spr_mask + s->link * SPR_BYTES);
+    uint32_t *di = (uint32_t *)(void *)(spr_img + slot * SPR_BYTES), *dm = (uint32_t *)(void *)(spr_mask + slot * SPR_BYTES);
     for (int i = 0, n = s->h * 6 * SPW / 4; i < n; i++) { di[i] = ti[i]; dm[i] = tm[i]; }
-    spr_key[s->link].e = (uint16_t)s->e;
-    spr_key[s->link].size = (uint8_t)(sw << 4 | sh);
-    spr_key[s->link].valid = 1;
+    spr_key[slot].key = spr_keyof(s);
+    spr_key[slot].used = pass_no;
+    spr_key[slot].valid = 1;
 }
 
 static int spr_tiles_dirty(const struct spr *s)
@@ -497,8 +503,20 @@ static void op_sprite_cpu(uint8_t *buf, int b, const struct spr *s)
 /* one sprite, cookie-cut into the buffer; the lines off the screen are left out */
 static void op_sprite(uint8_t *buf, int b, const struct spr *s, int tiles)
 {
-    if (!spr_key[s->link].valid || spr_key[s->link].e != (uint16_t)s->e || spr_key[s->link].size != (uint8_t)((s->w / 8) << 4 | s->h / 8))
-        spr_build(s);
+    /* its slot: eight places from its key's hash; else the free one or the one used longest ago, once
+     * the blits queued this pass are done if that one was used this pass */
+    uint32_t key = spr_keyof(s);
+    int h = (int)((key * 2654435761u) >> 25) & (NSPR - 1), slot = -1, victim = -1;
+    for (int p = 0; p < 8 && slot < 0; p++) {
+        int i = (h + p) & (NSPR - 1);
+        if (spr_key[i].valid && spr_key[i].key == key) { slot = i; spr_key[i].used = pass_no; break; }
+        if (victim < 0 || (spr_key[victim].valid && (!spr_key[i].valid || spr_key[i].used < spr_key[victim].used))) victim = i;
+    }
+    if (slot < 0) {
+        slot = victim;
+        if (spr_key[slot].valid && spr_key[slot].used == pass_no) blit_wait();
+        spr_build(s, slot);
+    }
     int y0 = s->y < 0 ? 0 : s->y, y1 = s->y + s->h > SH ? SH : s->y + s->h;
     if (y1 <= y0) return;
     int x = obj.px0 + s->x;
@@ -507,8 +525,8 @@ static void op_sprite(uint8_t *buf, int b, const struct spr *s, int tiles)
         op_sprite_cpu(buf, b, s);
         return;
     }
-    const uint8_t *img = spr_img + s->link * SPR_BYTES + (uint32_t)(y0 - s->y) * 6 * SPW;
-    const uint8_t *mask = spr_mask + s->link * SPR_BYTES + (uint32_t)(y0 - s->y) * 6 * SPW;
+    const uint8_t *img = spr_img + slot * SPR_BYTES + (uint32_t)(y0 - s->y) * 6 * SPW;
+    const uint8_t *mask = spr_mask + slot * SPR_BYTES + (uint32_t)(y0 - s->y) * 6 * SPW;
     int words = (s->w + 15) / 16 + ((x & 15) ? 1 : 0);   /* (the sprite's words, and one for the shift) */
     uint32_t bw = blit_words;
     op_cookie_w(buf, img, mask, SPW, words, x, obj.py0 + y0, y1 - y0);
@@ -558,6 +576,7 @@ void obj_update(void)
 {
     struct disp *d = &disp;
     obj.updates++;
+    pass_no++;
     SW = d->width / 8;
     WPX = d->width;
     int rebuild = !active || d->layout_dirty;
@@ -633,7 +652,8 @@ void obj_update(void)
     if (d->any_tile_dirty)                                /* the cached sprite images that show a changed tile, drawn this pass or not */
         for (int i = 0; i < NSPR; i++) {
             if (!spr_key[i].valid) continue;
-            struct spr k = { 0, 0, (spr_key[i].size >> 4) * 8, (spr_key[i].size & 15) * 8, 0, i, spr_key[i].e };
+            unsigned size = spr_key[i].key >> 16;
+            struct spr k = { 0, 0, (int)(size >> 4) * 8, (int)(size & 15) * 8, 0, i, spr_key[i].key & 0x7FFFu };
             if (spr_tiles_dirty(&k)) spr_key[i].valid = 0;
         }
     if (stay)

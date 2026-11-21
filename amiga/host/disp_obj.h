@@ -12,7 +12,8 @@
 #define OBJ_RH 256
 #define OBJ_LS (OBJ_RW * 6)                               /* bytes a line: six planes interleaved */
 #define OBJ_BYTES (OBJ_LS * OBJ_RH)
-#define OBJ_CHIP_BYTES (4 * OBJ_BYTES + 3 * 42 * 6 * 224 + 2 * 64 * 6 * 32 * 6)   /* everything the blitter reads or writes */
+#define OBJ_SPR_SLOTS 128                                 /* sprite images cached by what they show */
+#define OBJ_CHIP_BYTES (4 * OBJ_BYTES + 3 * 42 * 6 * 224 + 2 * OBJ_SPR_SLOTS * 6 * 32 * 6)   /* everything the blitter reads or writes */
 struct obj {
     uint8_t *rink, *rink_hi, *buf[2];                     /* in the platform's block (Chip RAM on the Amiga); rink_hi: the mask, repeated a plane row */
     int shown;                                            /* the buffer to show after obj_update */
