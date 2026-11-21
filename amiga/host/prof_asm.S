@@ -33,14 +33,6 @@ prof_handler:
 	.globl	show_handler
 show_handler:
 	movem.l	%d0-%d1/%a0,-(%sp)
-	move.l	show_dbg,%d1			/* the debug block in Chip RAM (screen.c): the PC at each vblank */
-	beq.s	.Lnodbg
-	move.l	%d1,%a0
-	move.l	14(%sp),12(%a0)
-	addq.l	#1,16(%a0)
-	move.w	0xdff01e,28(%a0)		/* INTREQR, INTENAR at the entry (the debug block's words 14, 15) */
-	move.w	0xdff01c,30(%a0)
-.Lnodbg:
 	lea	0xdff000,%a0
 	move.w	0x1e(%a0),%d0
 	and.w	0x1c(%a0),%d0
@@ -75,6 +67,16 @@ show_handler:
 	btst	#5,%d0				/* VERTB */
 	beq.s	.Lsdone
 	addq.l	#1,vb_count
+	move.l	show_dbg,%d1			/* the debug block in Chip RAM (screen.c): the PC at each vblank (only then: the */
+	beq.s	.Lnodbg				/* blitter's interrupts, a hundred a pass, write no Chip RAM here) */
+	move.l	%a0,-(%sp)			/* (a0 kept: only d0, d1 and a0 are saved at the entry) */
+	move.l	%d1,%a0
+	move.l	18(%sp),12(%a0)			/* (the PC: 4 more on the stack) */
+	addq.l	#1,16(%a0)
+	move.w	0xdff01e,28(%a0)		/* INTREQR, INTENAR (the debug block's words 14, 15) */
+	move.w	0xdff01c,30(%a0)
+	move.l	(%sp)+,%a0
+.Lnodbg:
 	move.w	0x4(%a0),%d1			/* the beam's line now (VPOSR's V8-V10, VHPOSR's V0-V7): where this vblank began */
 	and.w	#7,%d1
 	lsl.w	#8,%d1
