@@ -28,6 +28,41 @@ Gates passed on a stock A1200 (machine, Kickstart): A-...
 Tested by, on: <date>, <log name>
 ```
 
+## 0.7.0 (2026-11-21), phases P6, P7 and P10: speed, the Genesis's own pace, the host menu
+
+ADFs: `nhl94-aga-v0.7.0.adf` (public; it boots the host menu, then the game). For the owner of the ROM,
+made by `make -C amiga verify-disks` and never published: the verify, intent, show and audio check disks
+and `nhl94-rom-a.adf`, `nhl94-rom-b.adf`. Test sheet: amiga/tests/v0.7.0.md.
+
+Added:
+* The host menu before the title: 60 Hz (NTSC) or 50 Hz (PAL), which joystick port is player 1, which
+  player the keyboard is, the 4 Way Play adapter on or off, the audio filter (and power LED) on or off,
+  Start and Quit. Your choices are kept in `NHL94.prefs` beside the program.
+* The Genesis's own pace: the game runs at the cartridge's 59.923 passes a second (49.702 on PAL), timed
+  by CIA-B timer A, not at the Amiga's screen rate (which is 0.2% to 1% different on every A1200). The
+  timer is asked for from the system and given back when you quit.
+* When a picture cannot be drawn in its frame, the game keeps its time and that one picture is left out
+  (D-18): the game itself never slows down for the drawing. The checks still draw every picture.
+
+Changed:
+* Matches draw much faster: a match pass's drawing went from about 33 ms to about 10 ms on average
+  (emulated A1200 with Fast RAM). The players partly off the left of the screen, the score boxes and the
+  clock no longer make the whole overlay draw again.
+* The title and its scrolling credits draw only what moved (I-8): its passes went from about 30 ms to
+  about 14 ms on average; its game logic from 18 ms to 4 ms a pass.
+
+Fixed:
+* A timing error that could make one pass read as 4 seconds in the logs (the vertical blank arrives a
+  few lines before line 0 on the emulated A1200).
+
+Known issues:
+* Not every pass is drawn in its frame yet: about one match pass in eight, the title while its credits
+  scroll, and the in-match roster screen while its background moves (that one is limited by the
+  blitter itself). In those, a picture is left out; the game's speed is unaffected.
+* Screen changes (a fade to black, then the new screen) still take up to 3.5 seconds.
+* The sound is as in 0.6.0 (mono, fixed instrument timbres).
+* All of it is from a cycle-exact emulated A1200 (D-13). No real A1200 has run it yet.
+
 ## 0.6.0 (2026-11-20), phases P6 to P10: the game on screen, with sound and controllers
 
 ADFs: `nhl94-aga-v0.6.0.adf` (public; it boots the game). For the owner of the ROM, made by
