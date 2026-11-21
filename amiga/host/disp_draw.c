@@ -27,6 +27,7 @@ static uint16_t last_hs[DRAW_LINES][2], last_vs[2];      /* the scroll each line
  * title's wipe scrolls B line by line under the window). Any change to A marks the byte, which
  * draws it and sets this again */
 static uint8_t covered[DRAW_LINES][CW];
+static uint16_t prev_hs[DRAW_LINES][2];                  /* (the scroll before this update, when plane B moved: where its changed cells were) */
 static struct { int16_t x, y, w, h; } box[2][80];        /* the sprites' places on screen: this update's and the last's */
 static int boxes[2], first = 1;
 static uint8_t rev[256];                                  /* a byte's bits in the other order (a horizontally flipped tile) */
@@ -69,6 +70,18 @@ static void mark(int x, int y, int w, int h)              /* the line bytes a bo
 
 /* a cell of plane k (index i in its map) was written or shows a changed tile: where it lies on each
  * of the lines it shows on, by each line's scroll (and where the plane wraps) */
+static void mark_plane_cell_at(int k, int i, int vs, const uint16_t (*hs)[2])   /* where the cell was drawn: the scroll it was drawn with */
+{
+    int sh = __builtin_ctz((unsigned)disp.plane_w);
+    int pw = disp.plane_w * 8, vmask = disp.plane_h * 8 - 1, cx = (i & (disp.plane_w - 1)) * 8, cy = (i >> sh) * 8;
+    for (int r = 0; r < 8; r++) {
+        int y = (cy + r - vs) & vmask;
+        if (y >= DRAW_LINES) continue;
+        int x = (cx + hs[y][k]) & (pw - 1);
+        mark_span(y, x, 8);
+        mark_span(y, x - pw, 8);
+    }
+}
 static void mark_plane_cell(int k, int i)
 {
     int sh = __builtin_ctz((unsigned)disp.plane_w);       /* (the planes' sizes are powers of two: no division, slow on the 68020) */
@@ -286,6 +299,37 @@ static inline int b_opaque(const uint16_t *row, int pw, int px, int r)   /* a pl
     return disp.tile[e & 0x7FF][(e & 0x1000) ? 7 - r : r] != 0;
 }
 
+/* plane B's opaque pixels on a line at a scroll (vertical vs, horizontal hs), a flag a visible cell */
+static int b_cells(int y, int vs, int hs, uint8_t *op, int *sh)
+{
+    struct disp *d = &disp;
+    int pw = d->plane_w, pmask = pw * 8 - 1, py = (y + vs) & (d->plane_h * 8 - 1), r = py & 7, px0 = (-hs) & pmask, c0 = px0 >> 3, any = 0;
+    const uint16_t *row = &d->cell[1][(py >> 3) * pw];
+    *sh = px0 & 7;
+    for (int i = 0; i <= d->width / 8; i++) {
+        unsigned e = row[(c0 + i) & (pw - 1)];
+        op[i] = d->tile[e & 0x7FF][(e & 0x1000) ? 7 - r : r] != 0;
+        any |= op[i];
+    }
+    return any;
+}
+
+/* plane B moved (vertically, and maybe horizontally on the line) and plane A did not: the bytes where B
+ * had or now has a pixel and that A does not cover; a line whose A scroll changed, all of it */
+static void b_moved(int y)
+{
+    struct disp *d = &disp;
+    if (disp_hscroll(y, 0) != last_hs[y][0]) { mark_span(y, 0, d->width); return; }
+    uint8_t oo[42], on[42];
+    int so, sn;
+    int ao = b_cells(y, last_vs[1], last_hs[y][1], oo, &so), an = b_cells(y, d->vs[1], disp_hscroll(y, 1), on, &sn);
+    if (!ao && !an) return;
+    for (int bx = 0; bx < d->width / 8; bx++) {
+        if (covered[y][bx]) continue;
+        if (oo[bx] || (so && oo[bx + 1]) || on[bx] || (sn && on[bx + 1])) mark_span(y, bx * 8, 8);
+    }
+}
+
 /* a line whose horizontal scroll changed: plane A's moves the whole line; plane B's only the bytes
  * where B had or now has a pixel, and that plane A does not cover */
 static void hs_marks(int y)
@@ -482,11 +526,14 @@ int disp_compose_line(int line, uint8_t *out) { compose_line_slow(line, out); re
 void draw_update(void)
 {
     struct disp *d = &disp;
-    int cw = d->width / 8, all = first || d->layout_dirty || (d->reg[11] & 4);
+    int cw = d->width / 8, all = first || d->layout_dirty || (d->reg[11] & 4), b_was_moved = 0;
     draw.updates++;
     /* the scroll: the lines whose scroll changed since they were drawn (a vertical scroll moves them all) */
     if (!all && d->scroll_dirty) {
-        if (d->vs[1] != last_vs[1]) all = 1;
+        if (d->vs[1] != last_vs[1]) {
+            if (d->vs[0] != last_vs[0]) all = 1;
+            else { for (int y = 0; y < DRAW_LINES; y++) b_moved(y); b_was_moved = 1; }   /* plane B moved under a still plane A (the menus' moving background) */
+        }
         else if (d->vs[0] != last_vs[0]) {                /* plane A moved: the lines where the window does not cover it (the title's credits) */
             for (int y = 0; y < DRAW_LINES; y++) {
                 int w0, w1;
@@ -514,6 +561,8 @@ void draw_update(void)
             for (int y = 0; y < DRAW_LINES; y++)
                 hs_marks(y);
     }
+    int prev_vs1 = last_vs[1];
+    if (b_was_moved) memcpy(prev_hs, last_hs, sizeof prev_hs);
     if (all || d->scroll_dirty) {
         for (int y = 0; y < DRAW_LINES; y++) { last_hs[y][0] = disp_hscroll(y, 0); last_hs[y][1] = disp_hscroll(y, 1); }
         last_vs[0] = d->vs[0];
@@ -529,11 +578,17 @@ void draw_update(void)
     boxes[0] = boxes[1];
     /* the cells that were written, and the cells that show a tile whose pixels changed */
     int tiles = !all && d->any_tile_dirty && used_tile_dirty();
+    if (tiles && b_was_moved) all = 1;                    /* (a changed tile on a plane B that moved: where it was is not worked out) */
     if (!all && d->any_cell_dirty) {                      /* the cells written, by the dirty bytes */
         for (int k = 0; k < 2; k++) {
             if (!d->plane_dirty[k]) continue;
             for (int i = 0; i < d->plane_w * d->plane_h; i += 8)
-                if (d->cell_dirty[k][i >> 3]) for (int j = i; j < i + 8; j++) if (d->cell_dirty[k][j >> 3] >> (j & 7) & 1) mark_plane_cell(k, j);
+                if (d->cell_dirty[k][i >> 3])
+                    for (int j = i; j < i + 8; j++)
+                        if (d->cell_dirty[k][j >> 3] >> (j & 7) & 1) {
+                            mark_plane_cell(k, j);
+                            if (k == 1 && b_was_moved) mark_plane_cell_at(1, j, prev_vs1, prev_hs);   /* (and where it was: B moved this pass) */
+                        }
         }
         if (d->plane_dirty[2])
             for (int i = 0; i < d->win_w * 32; i++)

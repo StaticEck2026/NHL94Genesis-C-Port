@@ -64,12 +64,31 @@ void obj_reset(uint8_t *chip)
     }
 }
 
+static int sprites_on_screen(void)                        /* any sprite of the link list on the screen */
+{
+    const struct disp *d = &disp;
+    int total = d->width == 320 ? 80 : 64, link = 0;
+    for (int seen = 0; seen < total; seen++) {
+        const uint8_t *c = d->sat + link * 8, *q = d->spr + link * 8;
+        int y = ((c[0] << 8 | c[1]) & 0x3FF) - 128, sh = (c[2] & 3) + 1, sw = ((c[2] >> 2) & 3) + 1, next = c[3] & 0x7F;
+        int x = ((q[6] << 8 | q[7]) & 0x1FF) - 128;
+        if (y < 224 && y + sh * 8 > 0 && x < d->width && x + sw * 8 > 0) return 1;
+        if (!next || next >= total) break;
+        link = next;
+    }
+    return 0;
+}
+
 int obj_scene(void)
 {
     const struct disp *d = &disp;
     if ((d->width != 256 && d->width != 320) || (d->reg[11] & 7) || d->plane_w != 64 || d->plane_h != 32 || d->vs[0]) return 0;
     if (disp_hscroll(0, 0)) return 0;
     if (d->reg[0] & 0x20) return 0;                       /* (the left column blanked: not in a match) */
+    /* a 320-pixel picture without sprites (the in-match menus) goes to the composed picture: a step of
+     * their moving background redraws only where it shows there (about 560 line bytes), where here it
+     * moves the buffer under all of plane A (about 64,000 blitted words) */
+    if (d->width == 320 && !sprites_on_screen()) return 0;
     return 1;
 }
 
