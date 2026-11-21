@@ -56,7 +56,8 @@ void disp_vram_byte(uint16_t a, uint8_t b);
 void disp_vram_word(uint16_t a, uint16_t w);
 void disp_vram_long(uint16_t a, uint32_t v);
 void disp_vram_block(uint16_t a, const uint8_t *src, uint32_t words);
-void disp_cartridge(const uint8_t *rom, uint32_t size);   /* the cartridge image: tile uploads from it use its tiles converted once */
+void disp_cartridge(const uint8_t *rom, uint32_t size);
+extern int32_t disp_tsrc[2048];          /* per VRAM tile: the cartridge offset of the tile it holds whole, or -1 (written otherwise since) */   /* the cartridge image: tile uploads from it use its tiles converted once */
 void disp_vram_fill(uint16_t a, uint8_t b, uint32_t n, uint8_t step);
 void disp_vram_copy(uint16_t a, uint16_t src, uint32_t n, uint8_t step);
 static inline uint16_t disp_hscroll(int line, int k)     /* the horizontal scroll of plane k (0 A, 1 B) on a line, by the scroll mode */
