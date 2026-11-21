@@ -382,9 +382,12 @@ void plat_frame_done(long frame)
         if (!dl && getenv("HALCHECK_DRAWLOG")) dl = fopen(getenv("HALCHECK_DRAWLOG"), "w");
         if (dl) {
             static uint32_t lb;
-            fprintf(dl, "%ld %s %d %u %u b%u v%lu", frame, objmode ? "obj" : "draw", disp.width, draw.cells_drawn - lc, draw.full_updates - lf, blit_words - lb,
-                    frame_vwords);
+            static uint32_t lsb, lbc;
+            fprintf(dl, "%ld %s %d %u %u b%u v%lu s%u n%u", frame, objmode ? "obj" : "draw", disp.width, draw.cells_drawn - lc, draw.full_updates - lf, blit_words - lb,
+                    frame_vwords, obj.sprite_builds - lsb, blit_count - lbc);
             lb = blit_words;
+            lsb = obj.sprite_builds;
+            lbc = blit_count;
             for (int i = 0; i < 26; i++) if (disp.why[i] != lw[i]) fprintf(dl, " w%d:%u", i, disp.why[i] - lw[i]);
             fprintf(dl, " %06X\n", (unsigned)g.VBint);
             lc = draw.cells_drawn; lf = draw.full_updates;
