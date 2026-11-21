@@ -206,6 +206,23 @@ static void cell_word(uint16_t a, uint16_t w)
     if (table) d->cells_written += 2; else d->tile_bytes_written += 2;
 }
 
+/* a word in a block with the horizontal scroll table only: nothing when it is the same as before (the
+ * title sends its whole table every pass, most of it unchanged); else the tile cache and the table */
+static void scroll_word(uint16_t a, uint16_t w)
+{
+    struct disp *d = &disp;
+    uint32_t off = (uint16_t)(a - d->hscroll);
+    uint8_t hi = (uint8_t)(w >> 8), lo = (uint8_t)w;
+    if (off + 1 < 0x380) {
+        if (d->hsc[off] == hi && d->hsc[off + 1] == lo) return;   /* (the table mirrors VRAM: the same bytes change nothing) */
+        d->hsc[off] = hi;
+        d->hsc[off + 1] = lo;
+        d->scroll_dirty = 1;
+        d->why[25]++;
+    }
+    tile_word(a, w);
+}
+
 void disp_vram_word(uint16_t a, uint16_t w)
 {
     if (!(a & 1)) {
@@ -213,6 +230,7 @@ void disp_vram_word(uint16_t a, uint16_t w)
         if (!k) { tile_word(a, w); return; }
         if (k == 2) { sprite_word(a, w); return; }
         if (k == 1) { cell_word(a, w); return; }
+        if (k == 4) { scroll_word(a, w); return; }
     }
     put(a, (uint8_t)(w >> 8));
     put((uint16_t)(a + 1), (uint8_t)w);
@@ -226,6 +244,7 @@ void disp_vram_block(uint16_t a, const uint8_t *src, uint32_t words)
         if (!k) tile_word(a, (uint16_t)(src[0] << 8 | src[1]));
         else if (k == 2) sprite_word(a, (uint16_t)(src[0] << 8 | src[1]));
         else if (k == 1) cell_word(a, (uint16_t)(src[0] << 8 | src[1]));
+        else if (k == 4) scroll_word(a, (uint16_t)(src[0] << 8 | src[1]));
         else { put(a, src[0]); put((uint16_t)(a + 1), src[1]); }
     }
 }
