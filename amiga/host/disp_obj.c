@@ -687,10 +687,12 @@ void obj_update(void)
         abox[0].on = abox[1].on = 0;
         active = 1;
         obj.rebuilds++;
+        if (obj_clock) obj.ph_rebuild += obj_clock() - ph_last;
     } else {
         uint32_t t0 = obj_clock ? obj_clock() : 0;
         blit_wait();                                      /* (the CPU writes the bitmaps the blits read) */
         if (obj_clock) obj.wait_start += obj_clock() - t0;
+        uint32_t t1 = obj_clock ? obj_clock() : 0;
         int run0 = -1;                                    /* the rink's cells that changed, in runs along their rows */
         int tiles_b = tiles && b_tiles_changed();         /* (a tile the rink uses changed: every cell looked at) */
         for (int i = 0; i < 64 * 32; i++) {
@@ -708,8 +710,10 @@ void obj_update(void)
             }
             if (!tiles_b && !(i & 7) && !d->cell_dirty[1][i >> 3] && run0 < 0) i += 7;
         }
+        uint32_t t2 = obj_clock ? obj_clock() : 0;
         int tiles_a = tiles && a_tiles_changed();         /* (a tile plane A or the window uses changed: every cell of A looked at) */
         if (d->plane_dirty[0] || d->plane_dirty[2] || tiles_a) a_changes(tiles_a);
+        if (obj_clock) { uint32_t t3 = obj_clock(); obj.ph_rink += t2 - t1; obj.ph_a += t3 - t2; }
     }
     PHASE(0);
     int b = obj.shown ^ 1;
