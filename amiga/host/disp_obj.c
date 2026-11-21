@@ -301,14 +301,18 @@ static void a_changes(int tiles)
 /* what changed under plane A this pass: the screen lines (rows) and on each the pixels from row_x0 to
  * row_x1 (screen coordinates); plane A is cut again only there */
 static int16_t row_x0[SH], row_x1[SH];
-static void mark_span(uint8_t *rows, int y, int x0, int x1)
+static void mark_lines(uint8_t *rows, int y0, int y1, int x0, int x1)   /* screen lines y0 to y1 - 1, pixels x0 to x1 - 1 */
 {
     if (x0 < 0) x0 = 0;
     if (x1 > WPX) x1 = WPX;
-    if (y < 0 || y >= SH || x1 <= x0) return;
-    if (!rows[y]) { rows[y] = 1; row_x0[y] = (int16_t)x0; row_x1[y] = (int16_t)x1; return; }
-    if (x0 < row_x0[y]) row_x0[y] = (int16_t)x0;
-    if (x1 > row_x1[y]) row_x1[y] = (int16_t)x1;
+    if (y0 < 0) y0 = 0;
+    if (y1 > SH) y1 = SH;
+    if (x1 <= x0) return;
+    for (int y = y0; y < y1; y++) {
+        if (!rows[y]) { rows[y] = 1; row_x0[y] = (int16_t)x0; row_x1[y] = (int16_t)x1; continue; }
+        if (x0 < row_x0[y]) row_x0[y] = (int16_t)x0;
+        if (x1 > row_x1[y]) row_x1[y] = (int16_t)x1;
+    }
 }
 
 static void add_a(int b, int x, int y, int w, int h)      /* (a cut of plane A, for its restore later; the same one twice is kept once) */
@@ -532,10 +536,9 @@ static void cpu_compose(uint8_t *buf, int b, int y)
 static void mark_rect(uint8_t *rows, const struct rect *r)   /* the screen pixels a buffer rectangle covers */
 {
     int x0 = (r->x & ~15) - obj.px0, x1 = ((r->x + r->w + 15) & ~15) - obj.px0;   /* (whole words of the buffer: the blits' extent) */
-    for (int j = 0; j < r->h; j++) {
-        int y = (r->y + j - obj.py0) & 255;
-        if (y < SH) mark_span(rows, y, x0, x1);
-    }
+    int y = (r->y - obj.py0) & 255, end = y + r->h;       /* (the buffer's lines wrap at 256: at most two runs) */
+    mark_lines(rows, y, end < 256 ? end : 256, x0, x1);
+    if (end > 256) mark_lines(rows, 0, end - 256, x0, x1);
 }
 
 void obj_update(void)
@@ -620,7 +623,7 @@ void obj_update(void)
         }
     if (stay)
         for (int i = 0; i < nsp; i++)
-            for (int y = sp[i].y < 0 ? 0 : sp[i].y; y < sp[i].y + sp[i].h && y < SH; y++) mark_span(rows, y, sp[i].x, sp[i].x + sp[i].w);
+            mark_lines(rows, sp[i].y, sp[i].y + sp[i].h, sp[i].x, sp[i].x + sp[i].w);
     /* the painter's order: A low, sprites low, the rink's high pixels again, A high, sprites high */
     op_a(buf, b, a_lo_m, a_lo, a_row_lo, rows);
     for (int i = nsp - 1; i >= 0; i--) if (!sp[i].pri) op_sprite(buf, b, &sp[i], tiles);
@@ -633,7 +636,7 @@ void obj_update(void)
                 for (int cx = x0 >> 3; cx <= (x0 + sp[i].w + 15) >> 3 && !any; cx++) any = rink_hi_cell[(cy & 31) * 64 + (cx & 63)];
             if (!any) continue;
             op_recut(buf, x0, obj.py0 + y0, sp[i].w + 16, y1 - y0);
-            for (int y = y0; y < y1; y++) mark_span(rows, y, (x0 & ~15) - obj.px0, ((x0 + sp[i].w + 31) & ~15) - obj.px0);   /* (plane A high again where the recut went: its whole words) */
+            mark_lines(rows, y0, y1, (x0 & ~15) - obj.px0, ((x0 + sp[i].w + 31) & ~15) - obj.px0);   /* (plane A high again where the recut went: its whole words) */
         }
     for (int y = 0; y < SH; y++) {                        /* (and over plane A low on the lines it was drawn) */
         if (!rows[y] || !a_row_lo[y]) continue;
