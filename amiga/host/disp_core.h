@@ -30,6 +30,7 @@ struct disp {
     uint8_t spr[0x280];                                   /* the sprite table's bytes as last written (its tile and X words) */
     uint8_t hsc[0x380];                                   /* the horizontal scroll table's bytes */
     uint16_t uses[DISP_TILES];                            /* how many cells of A, B and the window name each tile */
+    uint16_t uses_b[DISP_TILES];                          /* of them, plane B's (the rink: its scan for changed tiles) */
     /* the layout, from the registers */
     int width, plane_w, plane_h, win_w;                   /* 256 or 320 pixels; cells */
     uint32_t base[3], size[3];                            /* the tables of A, B and the window: VRAM address and bytes */

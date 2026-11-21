@@ -52,8 +52,9 @@ static void layout(void)
 static void recount(void)
 {
     memset(disp.uses, 0, sizeof disp.uses);
+    memset(disp.uses_b, 0, sizeof disp.uses_b);
     for (int k = 0; k < 3; k++)
-        for (uint32_t i = 0; i < disp.size[k] / 2; i++) disp.uses[disp.cell[k][i] & 0x7FF]++;
+        for (uint32_t i = 0; i < disp.size[k] / 2; i++) { disp.uses[disp.cell[k][i] & 0x7FF]++; if (k == 1) disp.uses_b[disp.cell[k][i] & 0x7FF]++; }
 }
 static void reseed(int k)
 {
@@ -148,8 +149,10 @@ static void put(uint16_t a, uint8_t b)
         if (o >= d->size[k]) continue;
         uint16_t *c = &d->cell[k][o >> 1];
         d->uses[*c & 0x7FF]--;
+        if (k == 1) d->uses_b[*c & 0x7FF]--;
         *c = (a & 1) ? (uint16_t)((*c & 0xFF00) | b) : (uint16_t)((*c & 0x00FF) | b << 8);
         d->uses[*c & 0x7FF]++;
+        if (k == 1) d->uses_b[*c & 0x7FF]++;
         d->cell_dirty[k][o >> 4] |= (uint8_t)(1 << ((o >> 1) & 7));
         d->any_cell_dirty = 1;
         d->plane_dirty[k] = 1;
@@ -209,8 +212,10 @@ static void cell_word(uint16_t a, uint16_t w)
         if (o >= d->size[k]) continue;
         uint16_t *c = &d->cell[k][o >> 1];
         d->uses[*c & 0x7FF]--;
+        if (k == 1) d->uses_b[*c & 0x7FF]--;
         *c = w;
         d->uses[w & 0x7FF]++;
+        if (k == 1) d->uses_b[w & 0x7FF]++;
         d->cell_dirty[k][o >> 4] |= (uint8_t)(1 << ((o >> 1) & 7));
         d->any_cell_dirty = 1;
         d->plane_dirty[k] = 1;

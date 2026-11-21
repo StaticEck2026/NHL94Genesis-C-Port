@@ -220,6 +220,14 @@ static void op_cookie_w(uint8_t *buf, const uint8_t *img, const uint8_t *mask, i
 static inline int tile_dirty_used(unsigned t) { t &= 0x7FF; return disp.tile_dirty[t >> 3] >> (t & 7) & 1; }
 
 /* a tile whose pixels changed and that some cell names */
+static int b_tiles_changed(void)                          /* a changed tile that plane B (the rink) uses */
+{
+    for (int i = 0; i < DISP_TILES / 8; i++) {
+        unsigned m = disp.tile_dirty[i];
+        for (int j = 0; m; j++, m >>= 1) if ((m & 1) && disp.uses_b[i * 8 + j]) return 1;
+    }
+    return 0;
+}
 static int used_tiles_changed(void)
 {
     for (int i = 0; i < DISP_TILES / 8; i++) {
@@ -423,19 +431,25 @@ static uint8_t cpu_line[SH];
 static void sprite_list(void)
 {
     int h40 = WPX == 320, total = h40 ? 80 : 64, per_line = h40 ? 20 : 16, link = 0, seen = 0;
-    static int16_t count[SH], dots[SH];
-    memset(count, 0, sizeof count);
-    memset(dots, 0, sizeof dots);
+    /* the sprites and dots on each line, as differences (a sprite adds at its first line and takes away
+     * after its last), summed once over the lines: the counts only grow, so a line over the VDP's
+     * limits at the end was over them when its last sprite came */
+    static int16_t dcount[SH + 1], ddots[SH + 1];
+    static int16_t ly0[80], ly1[80], lmask[80];
+    int nl = 0;
+    memset(dcount, 0, sizeof dcount);
+    memset(ddots, 0, sizeof ddots);
     nsp = 0;
     while (seen++ < total) {
         const uint8_t *c = disp.sat + link * 8, *q = disp.spr + link * 8;
         int y = ((c[0] << 8 | c[1]) & 0x3FF) - 128, sh = (c[2] & 3) + 1, sw = ((c[2] >> 2) & 3) + 1, next = c[3] & 0x7F;
         unsigned e = (unsigned)(q[4] << 8 | q[5]);
         int rawx = (q[6] << 8 | q[7]) & 0x1FF, x = rawx - 128;
-        for (int l = y < 0 ? 0 : y; l < y + sh * 8 && l < SH; l++) {
-            count[l]++;
-            dots[l] = (int16_t)(dots[l] + sw * 8);
-            if (count[l] > per_line || dots[l] > WPX || (rawx == 0 && count[l] > 1)) cpu_line[l] = 1;
+        int l0 = y < 0 ? 0 : y, l1 = y + sh * 8 < SH ? y + sh * 8 : SH;
+        if (l0 < l1) {
+            dcount[l0]++; dcount[l1]--;
+            ddots[l0] = (int16_t)(ddots[l0] + sw * 8); ddots[l1] = (int16_t)(ddots[l1] - sw * 8);
+            ly0[nl] = (int16_t)l0; ly1[nl] = (int16_t)l1; lmask[nl] = (int16_t)(rawx == 0); nl++;
         }
         if (y < SH && y + sh * 8 > 0 && x < WPX && x + sw * 8 > 0) {
             sp[nsp].x = x; sp[nsp].y = y; sp[nsp].w = sw * 8; sp[nsp].h = sh * 8;
@@ -444,6 +458,17 @@ static void sprite_list(void)
         }
         if (!next || next >= total) break;
         link = next;
+    }
+    for (int l = 0, cnt = 0, dt = 0; l < SH; l++) {
+        cnt += dcount[l]; dt += ddots[l];
+        if (cnt > per_line || dt > WPX) cpu_line[l] = 1;
+    }
+    for (int i = 0; i < nl; i++) {                        /* (a sprite at X 0 masks the ones after it: a line where an earlier one is) */
+        if (!lmask[i]) continue;
+        for (int j = 0; j < i; j++) {
+            int a0 = ly0[i] > ly0[j] ? ly0[i] : ly0[j], a1 = ly1[i] < ly1[j] ? ly1[i] : ly1[j];
+            for (int l = a0; l < a1; l++) cpu_line[l] = 1;
+        }
     }
     /* a high-priority sprite under an earlier low-priority one: the VDP takes the earlier one's pixel
      * and its priority; drawing by priority would not, so those lines go to the CPU too */
@@ -645,9 +670,10 @@ void obj_update(void)
         blit_wait();                                      /* (the CPU writes the bitmaps the blits read) */
         if (obj_clock) obj.wait_start += obj_clock() - t0;
         int run0 = -1;                                    /* the rink's cells that changed, in runs along their rows */
+        int tiles_b = tiles && b_tiles_changed();         /* (a tile the rink uses changed: every cell looked at) */
         for (int i = 0; i < 64 * 32; i++) {
-            if (!tiles && !d->plane_dirty[1]) break;
-            int w = (d->cell_dirty[1][i >> 3] >> (i & 7) & 1) || (tiles && tile_dirty_used(d->cell[1][i]));
+            if (!tiles_b && !d->plane_dirty[1]) break;
+            int w = (d->cell_dirty[1][i >> 3] >> (i & 7) & 1) || (tiles_b && tile_dirty_used(d->cell[1][i]));
             if (w && run0 < 0) run0 = i;
             if (run0 >= 0 && (!w || (i & 63) == 63)) {
                 int c0 = run0 & 63, c1 = w ? (i & 63) : (i & 63) - 1, y = (run0 >> 6) * 8, x0 = c0 * 8, x1 = (c1 + 1) * 8;
@@ -658,7 +684,7 @@ void obj_update(void)
                 }
                 run0 = -1;
             }
-            if (!tiles && !(i & 7) && !d->cell_dirty[1][i >> 3] && run0 < 0) i += 7;
+            if (!tiles_b && !(i & 7) && !d->cell_dirty[1][i >> 3] && run0 < 0) i += 7;
         }
         if (d->plane_dirty[0] || d->plane_dirty[2] || tiles) a_changes(tiles);
     }
