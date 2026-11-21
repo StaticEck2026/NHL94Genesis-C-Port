@@ -470,6 +470,9 @@ static void run_one(void)
             logf_("%s: pace: %ld passes took %lu Genesis vblanks; the cartridge's pace (a vblank a pass, or the pass's own logic time) %lu: the game ran at %lu.%lu%% of its speed\n",
                   t->name, R->frames, took, ideal_ticks, took ? ideal_ticks * 100u / took : 0, took ? (ideal_ticks * 1000u / took) % 10 : 0);
         }
+        if (obj.updates) logf_("%s: SHOW: the scrolled scene by phase, raster lines a pass: changes %lu, restores %lu, sprite list %lu, low layers %lu, high layers %lu, CPU lines %lu\n", t->name,
+                               (unsigned long)(obj.ph[0] / obj.updates), (unsigned long)(obj.ph[1] / obj.updates), (unsigned long)(obj.ph[2] / obj.updates),
+                               (unsigned long)(obj.ph[3] / obj.updates), (unsigned long)(obj.ph[4] / obj.updates), (unsigned long)(obj.ph[5] / obj.updates));
         logf_("%s: SHOW: waits for the blitter: %lu raster lines in blit_wait (%lu of them inside the scrolled scene's drawing), %lu with the queue full\n", t->name,
               (unsigned long)blit_wait_time, (unsigned long)draw_wait_total, (unsigned long)blit_full_time);
     } else if (profiling) {

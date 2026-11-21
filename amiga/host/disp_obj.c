@@ -648,8 +648,11 @@ static void mark_rect(uint8_t *rows, const struct rect *r)   /* the screen pixel
     if (end > 256) mark_lines(rows, 0, end - 256, x0, x1);
 }
 
+static uint32_t ph_last;
+#define PHASE(k) do { if (obj_clock) { uint32_t now_ = obj_clock(); obj.ph[k] += now_ - ph_last; ph_last = now_; } } while (0)
 void obj_update(void)
 {
+    if (obj_clock) ph_last = obj_clock();
     struct disp *d = &disp;
     obj.updates++;
     pass_no++;
@@ -699,6 +702,7 @@ void obj_update(void)
         }
         if (d->plane_dirty[0] || d->plane_dirty[2] || tiles) a_changes(tiles);
     }
+    PHASE(0);
     int b = obj.shown ^ 1;
     uint8_t *buf = obj.buf[b];
     obj.px0 = (512 - disp_hscroll(0, 1)) & 511;
@@ -735,6 +739,7 @@ void obj_update(void)
     if (!stay) { nadone[b] = 0; abox[b].on = 0; }
     ndone[b] = nchg[b] = full[b] = 0;
     memset(cpu_line, 0, sizeof cpu_line);
+    PHASE(1);
     sprite_list();
     if (d->any_tile_dirty)                                /* the cached sprite images that show a changed tile, drawn this pass or not */
         for (int i = 0; i < NSPR; i++) {
@@ -747,6 +752,7 @@ void obj_update(void)
         for (int i = 0; i < nsp; i++)
             mark_lines(rows, sp[i].y, sp[i].y + sp[i].h, sp[i].x, sp[i].x + sp[i].w);
     /* the painter's order: A low, sprites low, the rink's high pixels again, A high, sprites high */
+    PHASE(2);
     op_a(buf, b, a_lo_m, a_lo, a_row_lo, rows, a_y0[0], a_y1[0]);
     for (int i = nsp - 1; i >= 0; i--) if (!sp[i].pri) op_sprite(buf, b, &sp[i], tiles);
     for (int i = 0; i < nsp; i++)
@@ -768,14 +774,17 @@ void obj_update(void)
         op_recut(buf, obj.px0, obj.py0 + y, WPX + 16, y1 - y);
         y = y1;
     }
+    PHASE(3);
     op_a(buf, b, a_hi_m, a_hi, a_row_hi, rows, a_y0[1], a_y1[1]);
     for (int i = nsp - 1; i >= 0; i--) if (sp[i].pri) op_sprite(buf, b, &sp[i], tiles);
+    PHASE(4);
     int any_cpu = 0;
     for (int y = 0; y < SH; y++) any_cpu |= cpu_line[y];
     if (any_cpu) {
         blit_wait();
         for (int y = 0; y < SH; y++) if (cpu_line[y]) cpu_compose(buf, b, y);
     }
+    PHASE(5);
     b_px0[b] = obj.px0;
     b_py0[b] = obj.py0;
     b_aver[b] = a_ver;

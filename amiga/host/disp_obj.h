@@ -21,7 +21,8 @@ struct obj {
     uint32_t updates, restored, drawn, cpu_lines, rebuilds;
     uint32_t rink_cells, sprite_builds, sprites_drawn, a_cells;   /* counts, for the cost */
     uint32_t w_restore, w_recut, w_a, w_sprite;           /* words blitted, by kind */
-    uint32_t wait_start;                                  /* time waited for the last pass's blits at the start of an update (obj_clock's units) */
+    uint32_t wait_start;
+    uint32_t ph[6];                                       /* time by phase (obj_clock's units): the rink's and A's changes, the restores, the sprite list, A low + sprites low + recut, A high + sprites high, the CPU's lines and the end */                                  /* time waited for the last pass's blits at the start of an update (obj_clock's units) */
 };
 extern struct obj obj;
 extern uint32_t (*obj_clock)(void);                       /* the platform's clock, for wait_start (none: not measured) */
