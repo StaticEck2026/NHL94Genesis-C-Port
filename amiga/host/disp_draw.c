@@ -357,6 +357,7 @@ static int sprite_boxes(int which)
         const uint8_t *q = disp.spr + link * 8;
         unsigned e = (unsigned)(q[4] << 8 | q[5]);
         int x = ((q[6] << 8 | q[7]) & 0x1FF) - 128;
+        disp_unstale_range(e & 0x7FF, (unsigned)(sw * sh));   /* (its tiles made from VRAM if they are behind it) */
         if (y < DRAW_LINES && y + sh * 8 > 0 && x < disp.width && x + sw * 8 > 0) {
             box[which][n].x = (int16_t)x; box[which][n].y = (int16_t)y;
             box[which][n].w = (int16_t)(sw * 8); box[which][n].h = (int16_t)(sh * 8);
@@ -526,6 +527,7 @@ int disp_compose_line(int line, uint8_t *out) { compose_line_slow(line, out); re
 void draw_update(void)
 {
     struct disp *d = &disp;
+    disp_unstale_used();                                  /* (the sprite table's tiles, behind VRAM: made again if a cell names one) */
     int cw = d->width / 8, all = first || d->layout_dirty || (d->reg[11] & 4), b_was_moved = 0;
     draw.updates++;
     /* the scroll: the lines whose scroll changed since they were drawn (a vertical scroll moves them all) */

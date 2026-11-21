@@ -462,6 +462,7 @@ static void sprite_list(void)
         int y = ((c[0] << 8 | c[1]) & 0x3FF) - 128, sh = (c[2] & 3) + 1, sw = ((c[2] >> 2) & 3) + 1, next = c[3] & 0x7F;
         unsigned e = (unsigned)(q[4] << 8 | q[5]);
         int rawx = (q[6] << 8 | q[7]) & 0x1FF, x = rawx - 128;
+        disp_unstale_range(e & 0x7FF, (unsigned)(sw * sh));   /* (its tiles made from VRAM if they are behind it) */
         int l0 = y < 0 ? 0 : y, l1 = y + sh * 8 < SH ? y + sh * 8 : SH;
         if (l0 < l1) {
             dcount[l0]++; dcount[l1]--;
@@ -666,6 +667,7 @@ void obj_update(void)
     pass_no++;
     SW = d->width / 8;
     WPX = d->width;
+    disp_unstale_used();                                  /* (the sprite table's tiles, behind VRAM: made again if a cell names one) */
     int rebuild = !active || d->layout_dirty;
     int tiles = !rebuild && d->any_tile_dirty && used_tiles_changed();
     if (rebuild) {

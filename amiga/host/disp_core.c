@@ -70,10 +70,46 @@ static void reseed(int k)
  * unchanged). Written where the tile cache changes (put, tile_word, cell_word), so it is VRAM */
 static uint8_t vraw[0x10000];
 
+/* tiles whose planar rows are behind VRAM (vraw): the sprite table's area, which the game sends every
+ * pass and nothing reads as tiles (I-9). A stale tile is made again from vraw before anything reads or
+ * changes it: a write to it, a VRAM read, a cell that names it (uses), a sprite whose tiles take it in */
+static uint8_t tstale[DISP_TILES / 8];
+int disp_any_stale;
+static void refresh_tile(unsigned t)
+{
+    const uint8_t *p = &vraw[t << 5];
+    uint32_t *row = disp.tile[t];
+    int changed = 0;
+    for (int r = 0; r < 8; r++, p += 4) {
+        uint32_t v = (c2p[p[0]] | c2p[p[1]] >> 2) | ((c2p[p[2]] | c2p[p[3]] >> 2) >> 4);
+        if (row[r] != v) { row[r] = v; changed = 1; }
+    }
+    if (changed) { disp.tile_dirty[t >> 3] |= (uint8_t)(1 << (t & 7)); disp.any_tile_dirty = 1; }
+    tstale[t >> 3] &= (uint8_t)~(1 << (t & 7));
+}
+static inline void unstale(unsigned t) { if (disp_any_stale && (tstale[t >> 3] >> (t & 7) & 1)) refresh_tile(t); }
+void disp_unstale_range(unsigned t0, unsigned n)          /* (a sprite's tiles: t0 on, n of them, round 2048) */
+{
+    if (!disp_any_stale) return;
+    for (unsigned i = 0; i < n; i++) unstale((t0 + i) & (DISP_TILES - 1));
+}
+void disp_unstale_used(void)                              /* the stale tiles a cell names */
+{
+    if (!disp_any_stale) return;
+    int left = 0;
+    for (unsigned i = 0; i < DISP_TILES / 8; i++) {
+        if (!tstale[i]) continue;
+        for (unsigned j = 0; j < 8; j++) if (tstale[i] >> j & 1) { if (disp.uses[i * 8 + j]) refresh_tile(i * 8 + j); else left = 1; }
+    }
+    disp_any_stale = left;
+}
+
 void disp_reset(void)
 {
     memset(&disp, 0, sizeof disp);
     memset(vraw, 0, sizeof vraw);
+    memset(tstale, 0, sizeof tstale);
+    disp_any_stale = 0;
     if (!c2p[255]) c2p_make();
     layout();
     recount();
@@ -115,6 +151,7 @@ void disp_vsram(int i, uint16_t v)
 
 uint8_t disp_byte(uint16_t a)
 {
+    unstale(a >> 5);
     uint32_t row = disp.tile[a >> 5][(a >> 2) & 7];
     int x = (a & 3) * 2, b = 0;
     for (int k = 0; k < 4; k++) {
@@ -130,6 +167,7 @@ uint16_t disp_word(uint16_t a) { return (uint16_t)(disp_byte(a) << 8 | disp_byte
 static void put(uint16_t a, uint8_t b)
 {
     struct disp *d = &disp;
+    unstale(a >> 5);
     uint32_t *row = &d->tile[a >> 5][(a >> 2) & 7];
     int x = (a & 3) * 2;
     uint32_t now = (*row & ~(0xC0C0C0C0u >> x)) | (c2p[b] >> x);
@@ -169,6 +207,7 @@ static void put(uint16_t a, uint8_t b)
  * pixels into the planar row, and the tile marked when they changed */
 static inline void tile_word(uint16_t a, uint16_t w)
 {
+    unstale(a >> 5);
     uint32_t *row = &disp.tile[a >> 5][(a >> 2) & 7];
     int x = (a & 2) * 2;
     uint32_t now = (*row & ~(0xF0F0F0F0u >> x)) | ((c2p[w >> 8] | c2p[w & 0xFF] >> 2) >> x);
@@ -192,6 +231,11 @@ static void sprite_word(uint16_t a, uint16_t w)
         if ((off & 7) < 4 && (d->sat[off] != hi || d->sat[off + 1] != lo)) { d->sat[off] = hi; d->sat[off + 1] = lo; d->sprites_dirty = 1; }
         if (d->spr[off] == hi && d->spr[off + 1] == lo) return;   /* (the table mirrors VRAM: the tile cache holds these bytes already) */
         d->spr[off] = hi; d->spr[off + 1] = lo; d->sprites_dirty = 1;
+        vraw[a] = hi; vraw[(uint16_t)(a + 1)] = lo;       /* (its tile made again only if something reads it as one) */
+        unsigned t = (unsigned)(a >> 5);
+        tstale[t >> 3] |= (uint8_t)(1 << (t & 7));
+        disp_any_stale = 1;
+        return;
     }
     tile_word(a, w);
 }
@@ -201,6 +245,7 @@ static void sprite_word(uint16_t a, uint16_t w)
 static void cell_word(uint16_t a, uint16_t w)
 {
     struct disp *d = &disp;
+    unstale(a >> 5);
     uint32_t *row = &d->tile[a >> 5][(a >> 2) & 7];
     int x = (a & 2) * 2;
     uint32_t now = (*row & ~(0xF0F0F0F0u >> x)) | ((c2p[w >> 8] | c2p[w & 0xFF] >> 2) >> x);
@@ -294,6 +339,7 @@ void disp_vram_block(uint16_t a, const uint8_t *src, uint32_t words)
         while (words >= 16 && !disp.special[a >> 6] && (uint32_t)(src - cart) + 32 <= cart_size) {   /* (whole tiles, in tiles-only VRAM) */
             const uint32_t *pl = tile_planar((uint32_t)(src - cart));
             if (!pl) break;
+            tstale[a >> 8] &= (uint8_t)~(1 << ((a >> 5) & 7));   /* (the whole tile written: not stale) */
             uint32_t *row = disp.tile[a >> 5];
             if (memcmp(row, pl, 32)) {
                 memcpy(row, pl, 32);
