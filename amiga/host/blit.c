@@ -2,6 +2,8 @@
 #include "blit.h"
 
 uint32_t blit_count, blit_words;
+uint32_t (*blit_clock)(void);                             /* the platform's clock, for the waits' time (none: not measured) */
+uint32_t blit_wait_time, blit_full_time;                  /* time in blit_wait, and with the queue full (blit_clock's units) */
 
 #if defined(__mc68000__) || defined(__mc68020__)
 #include "amiga.h"
@@ -75,14 +77,18 @@ void blit_run(const struct blit *bl)
          * the CPU take an interrupt the handler then finds disabled, each time round: nothing moves) */
         int h = qh;
         CREG(INTENA) = 0x8040;
+        uint32_t t0 = blit_clock ? blit_clock() : 0;
         while (qh == h && running) { }
+        if (blit_clock) blit_full_time += blit_clock() - t0;
     }
 }
 
 void blit_wait(void)
 {
+    uint32_t t0 = blit_clock ? blit_clock() : 0;
     if (async) while (running || qh != qt) { }
     hw_wait();
+    if (blit_clock) blit_wait_time += blit_clock() - t0;
 }
 
 void blit_when_done(void (*fn)(void))

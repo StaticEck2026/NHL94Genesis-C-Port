@@ -390,7 +390,7 @@ static void run_one(void)
         draw_reset(screen_plane);
         obj_chip = (UBYTE *)CALL(SysBase, LVO_AllocMem, REG(D0, OBJ_CHIP_BYTES), REG(D1, MEMF_CHIP | MEMF_CLEAR));
         win_planes = malloc(6 * DRAW_PLANE_BYTES);
-        if (obj_chip) { obj_reset(obj_chip); blit_async(1); obj_clock = obj_lines; }
+        if (obj_chip) { obj_reset(obj_chip); blit_async(1); obj_clock = obj_lines; blit_clock = obj_lines; }
         else logf_("%s: SHOW: no Chip RAM for the scrolled scene; every picture composed\n", t->name);
         was_obj = 0;
         snd_chip = (UBYTE *)CALL(SysBase, LVO_AllocMem, REG(D0, SOUND_CHIP_BYTES), REG(D1, MEMF_CHIP | MEMF_CLEAR));
@@ -460,6 +460,7 @@ static void run_one(void)
               (unsigned long)obj.updates, (unsigned long)obj.rebuilds, (unsigned long)obj.cpu_lines);
         if (obj.updates) logf_("%s: SHOW: the scrolled scene waited %lu raster lines in all for the last pass's blits at the start of its updates (%lu a pass)\n",
                                t->name, (unsigned long)obj.wait_start, (unsigned long)(obj.wait_start / obj.updates));
+        logf_("%s: SHOW: waits for the blitter: %lu raster lines in blit_wait, %lu with the queue full\n", t->name, (unsigned long)blit_wait_time, (unsigned long)blit_full_time);
     } else if (profiling) {
         K->profiling = 0;
         prof_stop();

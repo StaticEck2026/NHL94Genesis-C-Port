@@ -26,3 +26,5 @@ void blit_when_done(void (*fn)(void));                    /* fn once the queue i
 void blit_async(int on);                                  /* on: the queue runs from the blitter's interrupt (the machine taken) */
 void blit_irq(void);                                      /* (the level 3 handler's, on the blitter's interrupt) */
 extern uint32_t blit_count, blit_words;
+extern uint32_t (*blit_clock)(void);
+extern uint32_t blit_wait_time, blit_full_time;
