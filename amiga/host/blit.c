@@ -26,81 +26,57 @@ static void hw_wait(void)
     while (CREG(DMACONR) & 0x4000) { }
 }
 
-/* the registers the blitter does not change (its controls, masks and modulos) are written only when
- * they differ from the last blit's: a custom-chip write waits behind the blitter for the bus, and a
- * match's pass has about 80 blits (the pointers advance as a blit runs, and the size starts it: those
- * are written every time) */
-static struct { uint16_t con0, con1, fwm, lwm; int16_t amod, bmod, cmod, dmod; int valid; } sh;
-#define SET(reg, field, v) do { if (!sh.valid || sh.field != (v)) { sh.field = (v); CREG(reg) = (UWORD)(v); } } while (0)
 static void start(const struct blit *bl)
 {
-    SET(BLTCON0, con0, bl->con0);
-    SET(BLTCON1, con1, bl->con1);
-    SET(BLTAFWM, fwm, bl->fwm);
-    SET(BLTALWM, lwm, bl->lwm);
-    if (bl->a) { CREGL(BLTAPT) = (ULONG)bl->a; SET(BLTAMOD, amod, bl->amod); }
-    if (bl->b) { CREGL(BLTBPT) = (ULONG)bl->b; SET(BLTBMOD, bmod, bl->bmod); }
-    if (bl->c) { CREGL(BLTCPT) = (ULONG)bl->c; SET(BLTCMOD, cmod, bl->cmod); }
+    CREG(BLTCON0) = bl->con0;
+    CREG(BLTCON1) = bl->con1;
+    CREG(BLTAFWM) = bl->fwm;
+    CREG(BLTALWM) = bl->lwm;
+    if (bl->a) { CREGL(BLTAPT) = (ULONG)bl->a; CREG(BLTAMOD) = (UWORD)bl->amod; }
+    if (bl->b) { CREGL(BLTBPT) = (ULONG)bl->b; CREG(BLTBMOD) = (UWORD)bl->bmod; }
+    if (bl->c) { CREGL(BLTCPT) = (ULONG)bl->c; CREG(BLTCMOD) = (UWORD)bl->cmod; }
     CREGL(BLTDPT) = (ULONG)bl->d;
-    SET(BLTDMOD, dmod, bl->dmod);
-    sh.valid = 1;
+    CREG(BLTDMOD) = (UWORD)bl->dmod;
     CREG(BLTSIZV) = bl->h;
     CREG(BLTSIZH) = bl->w;                                /* (starts it) */
 }
 
-/* the queue: the main program adds at the tail, the interrupt takes from the head. Who starts the
- * blitter claims it by a compare-and-swap of running from 0 to 1 (the 68020's CAS): the main program
- * after adding, the interrupt after finding the queue empty and letting it go; so neither side has
- * to turn the interrupt off (two custom-chip writes a blit before) */
+/* the queue: the main program adds at the tail, the interrupt takes from the head */
 #define QN 256
 static struct blit q[QN];
 static volatile int qh, qt, running, async;
 static void (*volatile done_fn)(void);
-#define BARRIER() __asm__ __volatile__("" ::: "memory")
 
 void blit_async(int on)
 {
     blit_wait();
     async = on;
-    sh.valid = 0;                                         /* (the OS's blits came between) */
     CREG(INTREQ) = 0x0040;
     CREG(INTENA) = on ? 0x8040 : 0x0040;                  /* BLIT */
-}
-
-static void claim_and_start(void)                         /* the blitter idle: start the queue's head if no one else has */
-{
-    if (qh == qt || !__sync_bool_compare_and_swap(&running, 0, 1)) return;
-    if (qh == qt) { running = 0; return; }
-    start(&q[qh]);
-    qh = (qh + 1) % QN;
-}
-
-static void call_done(void)
-{
-    void (*f)(void) = done_fn;
-    if (f && __sync_bool_compare_and_swap(&done_fn, f, 0)) f();
 }
 
 void blit_irq(void)                                       /* the blitter finished: the next one, or the queue's end */
 {
     if (qh != qt) { start(&q[qh]); qh = (qh + 1) % QN; return; }
     running = 0;
-    BARRIER();
-    claim_and_start();                                    /* (one added meanwhile) */
-    if (!running && qh == qt) call_done();
+    if (done_fn) { void (*f)(void) = done_fn; done_fn = 0; f(); }
 }
 
 void blit_run(const struct blit *bl)
 {
     blit_count++;
     blit_words += (uint32_t)bl->w * bl->h;
-    if (!async) { hw_wait(); sh.valid = 0; start(bl); return; }
-    while ((qt + 1) % QN == qh) { }                       /* (full: the interrupt takes them) */
-    q[qt] = *bl;
-    BARRIER();
-    qt = (qt + 1) % QN;
-    BARRIER();
-    if (!running) claim_and_start();
+    if (!async) { hw_wait(); start(bl); return; }
+    for (;;) {
+        CREG(INTENA) = 0x0040;
+        if (!running) { running = 1; start(bl); CREG(INTENA) = 0x8040; return; }
+        if ((qt + 1) % QN != qh) { q[qt] = *bl; qt = (qt + 1) % QN; CREG(INTENA) = 0x8040; return; }
+        /* full: the interrupt on until the blitter has taken one. (Turning it straight off again can let
+         * the CPU take an interrupt the handler then finds disabled, each time round: nothing moves) */
+        int h = qh;
+        CREG(INTENA) = 0x8040;
+        while (qh == h && running) { }
+    }
 }
 
 void blit_wait(void)
@@ -112,9 +88,10 @@ void blit_wait(void)
 void blit_when_done(void (*fn)(void))
 {
     if (!async) { hw_wait(); fn(); return; }
+    CREG(INTENA) = 0x0040;
+    if (!running && qh == qt) { CREG(INTENA) = 0x8040; fn(); return; }
     done_fn = fn;
-    BARRIER();
-    if (!running && qh == qt) call_done();                /* (else the interrupt calls it at the queue's end) */
+    CREG(INTENA) = 0x8040;
 }
 #else
 /* the host's model of the same blit */
