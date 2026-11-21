@@ -237,6 +237,14 @@ static int b_tiles_changed(void)                          /* a changed tile that
     }
     return 0;
 }
+static int a_tiles_changed(void)                          /* a changed tile that plane A or the window uses */
+{
+    for (int i = 0; i < DISP_TILES / 8; i++) {
+        unsigned m = disp.tile_dirty[i];
+        for (int j = 0; m; j++, m >>= 1) if ((m & 1) && disp.uses_a[i * 8 + j]) return 1;
+    }
+    return 0;
+}
 static int used_tiles_changed(void)
 {
     for (int i = 0; i < DISP_TILES / 8; i++) {
@@ -700,7 +708,8 @@ void obj_update(void)
             }
             if (!tiles_b && !(i & 7) && !d->cell_dirty[1][i >> 3] && run0 < 0) i += 7;
         }
-        if (d->plane_dirty[0] || d->plane_dirty[2] || tiles) a_changes(tiles);
+        int tiles_a = tiles && a_tiles_changed();         /* (a tile plane A or the window uses changed: every cell of A looked at) */
+        if (d->plane_dirty[0] || d->plane_dirty[2] || tiles_a) a_changes(tiles_a);
     }
     PHASE(0);
     int b = obj.shown ^ 1;
