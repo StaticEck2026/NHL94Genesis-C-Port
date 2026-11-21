@@ -277,6 +277,20 @@ static void a_layer(void)                                 /* all of it */
 
 /* the cells of plane A and the window that were written or show a changed tile (the screen's part:
  * A does not scroll in a scrolled scene) */
+/* the lines that have plane A low and high now, exactly (after its cells changed: a_cell only widens
+ * the ranges, and an in-match menu over the whole screen would leave them wide for the match) */
+static void a_ranges(void)
+{
+    for (int k = 0; k < 2; k++) {
+        const int16_t *c = k ? a_row_hi : a_row_lo;
+        int y0 = 0, y1 = SH;
+        while (y0 < SH && !c[y0]) y0++;
+        while (y1 > y0 && !c[y1 - 1]) y1--;
+        a_y0[k] = y0 < y1 ? y0 : SH;
+        a_y1[k] = y0 < y1 ? y1 : 0;
+    }
+}
+
 /* plane A's cells changed since each buffer was drawn, as screen rectangles (merged along a row, in
  * apend): restored and cut again there, the rest of plane A staying in the buffer */
 
@@ -311,6 +325,7 @@ static void a_changes(int tiles)
         }
     }
     if (over) a_ver++;                                    /* (too many: plane A drawn again in full) */
+    a_ranges();
 }
 
 /* what changed under plane A this pass: the screen lines (rows) and on each the pixels from row_x0 to
