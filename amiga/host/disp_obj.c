@@ -327,30 +327,47 @@ static void window_span(int line, int *x0, int *x1)
     if (disp.reg[17] & 0x80) { *x0 = wx; *x1 = width; } else *x1 = wx;
 }
 
-/* one screen cell of plane A or the window into the A images, and the rows' counts */
-static void a_cell(int cx, int cy, int win)
+/* screen cells cx0 to cx1 of cell row cy (plane A or the window, by the row's span w0 to w1) into the A
+ * images, and the rows' counts: a line at a time made in Fast RAM, then into Chip RAM in longs, only
+ * what can show (no image where the masks are clear: the cut takes the buffer there; no mask that is
+ * and was clear) */
+static void a_run(int cy, int cx0, int cx1, int w0, int w1)
 {
-    obj.a_cells++;
-    unsigned e = win ? disp.cell[2][cy * disp.win_w + cx] : disp.cell[0][cy * 64 + cx];
-    a_ent[cy][cx] = (uint16_t)e;
+    static uint8_t st[3][6][SWMAX + 4];                   /* (the image, the high mask, the low mask: at the images' byte parity) */
+    const int n = cx1 - cx0 + 1, par = cx0 & 1;
+    uint16_t ent[SWMAX];
+    obj.a_cells += (uint32_t)n;
+    for (int cx = cx0; cx <= cx1; cx++) {
+        int win = cx * 8 >= w0 && cx * 8 < w1;
+        ent[cx] = win ? disp.cell[2][cy * disp.win_w + cx] : disp.cell[0][cy * 64 + cx];
+        a_ent[cy][cx] = ent[cx];
+    }
     for (int r = 0; r < 8; r++) {
         int y = cy * 8 + r;
-        uint8_t p6[6], m;
-        cell_row(e, r, p6, &m);
-        uint8_t hi = (e & 0x8000) ? m : 0, lo = (e & 0x8000) ? 0 : m;
-        /* (Chip RAM, a byte at a time: only what can show. Where both masks are and were clear the
-         * image is never seen (the cut takes the buffer there), and a mask clear before and after
-         * stays as it is) */
-        uint8_t *pi = a_img + (uint32_t)(y * 6) * AW + (uint32_t)cx;
-        if (m) for (int k = 0; k < 6; k++) pi[k * AW] = p6[k];
-        if (hi || a_hi[y][cx]) { uint8_t *ph = a_hi_m + (pi - a_img); for (int k = 0; k < 6; k++) ph[k * AW] = hi; }
-        if (lo || a_lo[y][cx]) { uint8_t *pl = a_lo_m + (pi - a_img); for (int k = 0; k < 6; k++) pl[k * AW] = lo; }
-        a_row_hi[y] = (int16_t)(a_row_hi[y] + (hi != 0) - (a_hi[y][cx] != 0));
-        a_row_lo[y] = (int16_t)(a_row_lo[y] + (lo != 0) - (a_lo[y][cx] != 0));
-        a_hi[y][cx] = hi;
-        a_lo[y][cx] = lo;
-        if (hi) { if (y < a_y0[1]) a_y0[1] = y; if (y >= a_y1[1]) a_y1[1] = y + 1; }
-        if (lo) { if (y < a_y0[0]) a_y0[0] = y; if (y >= a_y1[0]) a_y1[0] = y + 1; }
+        uint8_t m_any = 0, hi_any = 0, lo_any = 0;
+        for (int cx = cx0; cx <= cx1; cx++) {
+            unsigned e = ent[cx];
+            int j = par + cx - cx0;
+            uint8_t p6[6], m;
+            cell_row(e, r, p6, &m);
+            uint8_t hi = (e & 0x8000) ? m : 0, lo = (e & 0x8000) ? 0 : m;
+            for (int k = 0; k < 6; k++) { st[0][k][j] = p6[k]; st[1][k][j] = hi; st[2][k][j] = lo; }
+            m_any |= m;
+            hi_any |= hi | a_hi[y][cx];
+            lo_any |= lo | a_lo[y][cx];
+            a_row_hi[y] = (int16_t)(a_row_hi[y] + (hi != 0) - (a_hi[y][cx] != 0));
+            a_row_lo[y] = (int16_t)(a_row_lo[y] + (lo != 0) - (a_lo[y][cx] != 0));
+            a_hi[y][cx] = hi;
+            a_lo[y][cx] = lo;
+            if (hi) { if (y < a_y0[1]) a_y0[1] = y; if (y >= a_y1[1]) a_y1[1] = y + 1; }
+            if (lo) { if (y < a_y0[0]) a_y0[0] = y; if (y >= a_y1[0]) a_y1[0] = y + 1; }
+        }
+        for (int k = 0; k < 6; k++) {
+            uint32_t o = (uint32_t)(y * 6 + k) * AW + (uint32_t)cx0;
+            if (m_any) copy_run(a_img + o, &st[0][k][par], n);
+            if (hi_any) copy_run(a_hi_m + o, &st[1][k][par], n);
+            if (lo_any) copy_run(a_lo_m + o, &st[2][k][par], n);
+        }
     }
 }
 
@@ -434,13 +451,12 @@ static void a_changes(int tiles, int all)
             if (cx < SW) {
                 int win = cx * 8 >= w0 && cx * 8 < w1, i = win ? cy * disp.win_w + cx : cy * 64 + cx, k = win ? 2 : 0;
                 unsigned e = disp.cell[k][i];
-                int td = tiles && tile_dirty_used(e);
                 if ((all || (disp.cell_dirty[k][i >> 3] >> (i & 7) & 1)) && e != a_ent[cy][cx]) ch = 1;
-                if (td) ch = 1;
-                if (ch) a_cell(cx, cy, win);
+                if (tiles && tile_dirty_used(e)) ch = 1;
             }
             if (ch && run0 < 0) run0 = cx;
             if (!ch && run0 >= 0) {
+                a_run(cy, run0, cx - 1, w0, w1);
                 for (int b = 0; b < 2; b++) add(apend[b], &napend[b], &over, run0 * 8, cy * 8, (cx - run0) * 8, 8);
                 run0 = -1;
             }
