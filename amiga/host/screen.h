@@ -18,6 +18,7 @@ void screen_present(void);                /* the copper list for the state disp_
 void screen_present_obj(const UBYTE *buf, int px0, int py0);
 void screen_prepare_obj(const UBYTE *buf, int px0, int py0);   /* its copper list built, not yet taken ... */
 void screen_commit(void);                                       /* ... until this (blit.c's queue end: the buffer is finished) */
+extern volatile int screen_pending;                          /* a list prepared and its commit waiting in the blit queue (set by the caller) */
 void screen_wait_vblank(void);            /* until the next vertical blank begins */
 ULONG screen_lines(void);                 /* raster lines since screen_open: the time base while the machine is taken */
 int screen_frame_lines(void);             /* lines a frame of this beam */

@@ -13,6 +13,21 @@
 
 struct obj obj;
 uint32_t (*obj_clock)(void);
+/* the last pass's blits are waited for only before the CPU first writes what they read (the rink, the
+ * plane A images, a sprite image they draw): until then the CPU's work goes on beside them */
+static int waited;
+static uint32_t done_before;                              /* (every blit of the passes before this one is done) */
+static uint32_t pass_no;
+static void chip_wait(void)
+{
+    if (waited) return;
+    uint32_t t0 = obj_clock ? obj_clock() : 0;
+    blit_wait();
+    if (obj_clock) obj.wait_start += obj_clock() - t0;
+    waited = 1;
+    done_before = pass_no;
+}
+
 #define SWMAX 40                                          /* screen bytes a line at most (320 pixels) */
 static int SW = 32, WPX = 256;                            /* this picture's: bytes a line and pixels (256 or 320) */
 #define SH 224
@@ -37,7 +52,7 @@ static uint8_t *spr_img, *spr_mask;                       /* the sprite images, 
  * is not part of the picture), and the pass that last used it. Players of a team showing the same
  * frame share one image, and frames that come round again are found (they were cached by link number) */
 static struct { uint32_t key, used; uint8_t valid; } spr_key[NSPR];
-static uint32_t pass_no, spr_drawn[NSPR];               /* (and the pass each slot was last blitted in)*/
+static uint32_t spr_drawn[NSPR];               /* (and the pass each slot was last blitted in)*/
 /* which cached images take in each tile (a bit a slot), so that a changed tile drops just the images
  * that show it, without every slot's tiles looked up each pass (the players' frames change tiles
  * every pass). A bit may outlive its image (no harm: an image built again); it never misses one */
@@ -133,6 +148,7 @@ static inline uint32_t rev4(uint32_t v)                  /* each byte's bits rev
  * rink bitmap and its mask in longs (Chip RAM byte writes are slow); the first 40 columns again at 64 */
 static void rink_run(int cy, int cx0, int cx1, int dup)
 {
+    chip_wait();
     static uint32_t tl[2][8 * 6][(64 + 4) / 4];
     enum { TS = sizeof tl[0][0] };                        /* (bytes from one plane row of the staging to the next) */
     int n = cx1 - cx0 + 1, par = cx0 & 1;
@@ -333,6 +349,7 @@ static void window_span(int line, int *x0, int *x1)
  * and was clear) */
 static void a_run(int cy, int cx0, int cx1, int w0, int w1)
 {
+    chip_wait();
     static uint8_t st[3][6][SWMAX + 4];                   /* (the image, the high mask, the low mask: at the images' byte parity) */
     const int n = cx1 - cx0 + 1, par = cx0 & 1;
     uint16_t ent[SWMAX];
@@ -374,6 +391,7 @@ static void a_run(int cy, int cx0, int cx1, int w0, int w1)
 /* all of it: as a_cell does, a cell row at a time made in Fast RAM and copied into the images in longs */
 static void a_layer(void)
 {
+    chip_wait();
     static uint8_t st[3][6][SWMAX];                       /* (a line's plane rows: the image, the high mask, the low mask) */
     for (int cy = 0; cy < SH / 8; cy++) {
         int w0, w1;
@@ -625,6 +643,7 @@ static inline uint32_t spr_keyof(const struct spr *s) { return (s->e & 0x7FFFu) 
 #endif
 static void spr_build(const struct spr *s, int slot)
 {
+    if (spr_key[slot].used >= done_before && spr_key[slot].used < pass_no) chip_wait();   /* (drawn by a pass whose blits may be waiting still) */
     for (unsigned i = 0; i < slot_n[slot]; i++) tslot[(slot_t0[slot] + i) & (DISP_TILES - 1)][slot >> 5] &= ~(1u << (slot & 31));
     slot_t0[slot] = (uint16_t)(s->e & 0x7FF);
     slot_n[slot] = (uint16_t)((s->w / 8) * (s->h / 8));
@@ -865,6 +884,7 @@ void obj_update(void)
     SW = d->width / 8;
     WPX = d->width;
     disp_unstale_used();                                  /* (the sprite table's tiles, behind VRAM: made again if a cell names one) */
+    waited = 0;
     /* the window's place (registers 17 and 18: an in-match message bar coming and going, most of a
      * match's layout changes) changes only plane A and the window: that is drawn again in full, the
      * rink and the buffers stay */
@@ -873,7 +893,7 @@ void obj_update(void)
     int a_redo = !rebuild && d->layout_dirty;
     int tiles = !rebuild && d->any_tile_dirty && used_tiles_changed();
     if (rebuild) {
-        blit_wait();                                      /* (the last pass's blits read the rink) */
+        chip_wait();                                      /* (the last pass's blits read the rink) */
         uint32_t r0 = obj_clock ? obj_clock() : 0;
         for (int cy = 0; cy < 32; cy++) rink_run(cy, 0, 63, 0);
         memset(rk_stale, 0, sizeof rk_stale);
@@ -903,9 +923,6 @@ void obj_update(void)
         obj.rebuilds++;
         if (obj_clock) obj.ph_rebuild += obj_clock() - ph_last;
     } else {
-        uint32_t t0 = obj_clock ? obj_clock() : 0;
-        blit_wait();                                      /* (the CPU writes the bitmaps the blits read) */
-        if (obj_clock) obj.wait_start += obj_clock() - t0;
         uint32_t t1 = obj_clock ? obj_clock() : 0;
         /* the rink's cells that changed: marked, and made when they are on the screen (below) */
         int tiles_b = tiles && b_tiles_changed();         /* (a tile the rink uses changed: every cell looked at) */

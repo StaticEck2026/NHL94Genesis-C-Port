@@ -206,7 +206,12 @@ void plat_frame_done(long frame)
             h = planes_hash32(wp);
         } else h = (ref || made) ? planes_hash32(screen_plane) : 0;
         if (!drawn) { }
-        else if (objmode) { screen_prepare_obj(obj.buf[obj.shown], obj.px0, obj.py0); blit_when_done(screen_commit); }   /* (shown once its blits are done) */
+        else if (objmode) {                               /* (shown once its blits are done: a mark in the queue, the next pass's blits behind it) */
+            while (screen_pending) { }                    /* (the last pass's list still waiting for its commit: not built over) */
+            screen_prepare_obj(obj.buf[obj.shown], obj.px0, obj.py0);
+            screen_pending = 1;
+            blit_when_done(screen_commit);
+        }
         else { blit_wait(); screen_present(); }
         if (sound_on) { sound_frame(); audio_apply(); }
         screen_dbg[5] = 3;

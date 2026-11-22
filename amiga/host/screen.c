@@ -140,10 +140,12 @@ void screen_prepare_obj(const UBYTE *buf, int px0, int py0)
     *c = 0xFFFE;
 }
 
+volatile int screen_pending;
 void screen_commit(void)
 {
     CREGL(COP1LC) = (ULONG)cop[cop_next];                 /* (taken by the copper at the next vertical blank) */
     cop_next ^= 1;
+    screen_pending = 0;
 }
 
 void screen_present_obj(const UBYTE *buf, int px0, int py0)

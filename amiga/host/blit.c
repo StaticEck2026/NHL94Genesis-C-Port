@@ -61,9 +61,9 @@ static void start(const struct blit *bl)
 
 /* the queue: the main program adds at the tail, the interrupt takes from the head */
 #define QN 256
-static struct blit q[QN];
+static struct blit q[QN];                                /* (an entry of no width: a mark, its function called when the blitter reaches it) */
+static void (*qfn[QN])(void);
 static volatile int qh, qt, running, async;
-static void (*volatile done_fn)(void);
 
 void blit_regs_lost(void) { sh_ok = 0; }
 
@@ -76,11 +76,11 @@ void blit_async(int on)
     CREG(INTENA) = on ? 0x8040 : 0x0040;                  /* BLIT */
 }
 
-void blit_irq(void)                                       /* the blitter finished: the next one, or the queue's end */
+void blit_irq(void)                                       /* the blitter finished: the marks reached, the next one, or the queue's end */
 {
+    while (qh != qt && !q[qh].w) { void (*f)(void) = qfn[qh]; qh = (qh + 1) % QN; f(); }
     if (qh != qt) { start(&q[qh]); qh = (qh + 1) % QN; return; }
     running = 0;
-    if (done_fn) { void (*f)(void) = done_fn; done_fn = 0; f(); }
 }
 
 void blit_run(const struct blit *bl)
@@ -113,10 +113,14 @@ void blit_wait(void)
 void blit_when_done(void (*fn)(void))
 {
     if (!async) { hw_wait(); fn(); return; }
-    CREG(INTENA) = 0x0040;
-    if (!running && qh == qt) { CREG(INTENA) = 0x8040; fn(); return; }
-    done_fn = fn;
-    CREG(INTENA) = 0x8040;
+    for (;;) {
+        CREG(INTENA) = 0x0040;
+        if (!running) { CREG(INTENA) = 0x8040; fn(); return; }   /* (not running: the queue is empty, its marks called) */
+        if ((qt + 1) % QN != qh) { q[qt].w = 0; qfn[qt] = fn; qt = (qt + 1) % QN; CREG(INTENA) = 0x8040; return; }
+        int h = qh;
+        CREG(INTENA) = 0x8040;
+        while (qh == h && running) { }
+    }
 }
 #else
 /* the host's model of the same blit */

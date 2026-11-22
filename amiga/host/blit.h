@@ -22,7 +22,7 @@ struct blit {
 
 void blit_run(const struct blit *bl);                     /* queued; started as the blitter finishes the ones before */
 void blit_wait(void);                                     /* until the queue is empty and the last one has finished */
-void blit_when_done(void (*fn)(void));                    /* fn once the queue is empty (at once if it is) */
+void blit_when_done(void (*fn)(void));                    /* fn once the blits queued so far are done (at once if none are): a mark in the queue, the blits after it go on */
 void blit_async(int on);                                  /* on: the queue runs from the blitter's interrupt (the machine taken) */
 void blit_irq(void);
 void blit_regs_lost(void);                                /* the blitter was someone else's (OwnBlitter again): its registers all written at the next blit */                                      /* (the level 3 handler's, on the blitter's interrupt) */
