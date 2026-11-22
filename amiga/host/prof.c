@@ -6,6 +6,7 @@
  * check, and only inside a window of frames when one is asked for. Given back afterwards; the counts
  * go to NAME.prof for amiga/tools/profreport.py. While the machine is taken the E clock does not run,
  * so a profiling run reports no pass times. */
+#include "blit.h"
 #include "amiga.h"
 #include "libc_amiga.h"
 #include "prof.h"
@@ -44,6 +45,7 @@ int prof_start(void)
     CALL(GfxBase, LVO_WaitTOF);
     CALL(GfxBase, LVO_WaitTOF);
     CALL(GfxBase, LVO_OwnBlitter);
+    blit_regs_lost();
     CALL(GfxBase, LVO_WaitBlit);
     CALL(SysBase, LVO_Forbid);
     saved.vbr = get_vbr();

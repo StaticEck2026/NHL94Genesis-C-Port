@@ -118,6 +118,12 @@ static inline void copy_par(uint8_t *d, const uint8_t *src, int n)   /* (src at 
     memcpy(d, src, (size_t)n);
 }
 
+static inline void copy_run(uint8_t *d, const uint8_t *src, int n)   /* (a few bytes inline, more in longs) */
+{
+    if (n < 8) { while (n--) *d++ = *src++; return; }
+    copy_par(d, src, n);
+}
+
 static inline uint32_t rev4(uint32_t v)                  /* each byte's bits reversed (a horizontal flip) */
 {
     return (uint32_t)rev[v >> 24] << 24 | (uint32_t)rev[(v >> 16) & 0xFF] << 16 | (uint32_t)rev[(v >> 8) & 0xFF] << 8 | rev[v & 0xFF];
@@ -133,6 +139,7 @@ static void rink_run(int cy, int cx0, int cx1, int dup)
     obj.rink_cells += (uint32_t)n;
     const uint16_t *cells = &disp.cell[1][cy * 64];
     uint32_t hbits[2] = { 0, 0 };
+    uint8_t hseen = 0;
     for (int cx = cx0; cx <= cx1; cx++) {
         unsigned e = cells[cx];
         const uint32_t *tr = disp.tile[e & 0x7FF];
@@ -149,6 +156,7 @@ static void rink_run(int cy, int cx0, int cx1, int dup)
             pl[4 * TS] = o & k4; pl[5 * TS] = o & k5;
             ph[0] = h; ph[TS] = h; ph[2 * TS] = h; ph[3 * TS] = h; ph[4 * TS] = h; ph[5 * TS] = h;
         }
+        hseen |= rink_hi_cell[cy * 64 + cx] | any;        /* (high pixels before or now: the mask's bytes written) */
         rink_hi_cell[cy * 64 + cx] = any != 0;
         if (any) hbits[cx >> 5] |= 1u << (cx & 31);
     }
@@ -159,9 +167,9 @@ static void rink_run(int cy, int cx0, int cx1, int dup)
         for (int k = 0; k < 6; k++) {
             uint32_t o = (uint32_t)(cy * 8 + r) * OBJ_LS + (uint32_t)k * OBJ_RW + (uint32_t)cx0;
             const uint8_t *sl = (const uint8_t *)tl[0][r * 6 + k] + par, *sh = (const uint8_t *)tl[1][r * 6 + k] + par;
-            copy_par(obj.rink + o, sl, n);
-            copy_par(obj.rink_hi + o, sh, n);
-            if (n1) { copy_par(obj.rink + o + 64, sl, n1); copy_par(obj.rink_hi + o + 64, sh, n1); }
+            copy_run(obj.rink + o, sl, n);
+            if (hseen) copy_run(obj.rink_hi + o, sh, n);   /* (clear before and after: as it is) */
+            if (n1) { copy_run(obj.rink + o + 64, sl, n1); if (hseen) copy_run(obj.rink_hi + o + 64, sh, n1); }
         }
 }
 
@@ -171,6 +179,29 @@ static void add(struct rect *list, int *n, int *overflow, int x, int y, int w, i
     if (*n >= MAXR) { *overflow = 1; return; }
     list[*n].x = (int16_t)x; list[*n].y = (int16_t)y; list[*n].w = (int16_t)w; list[*n].h = (int16_t)h;
     (*n)++;
+}
+
+/* a sprite's restore for later, merged with the one before it (most often another piece of the same
+ * player) when their box is little more than the two: a blit fewer (each costs the CPU the queue, an
+ * interrupt and the blitter's registers). In whole words, the blits' extent; not across the 256 lines' wrap */
+static void add_done(int b, int x, int y, int w, int h)
+{
+    if (w <= 0 || h <= 0) return;
+    if (ndone[b] > 0 && y + h <= 256) {
+        struct rect *l = &done[b][ndone[b] - 1];
+        if (l->y + l->h <= 256) {
+            int a0 = l->x >> 4, a1 = (l->x + l->w + 15) >> 4, c0 = x >> 4, c1 = (x + w + 15) >> 4;
+            int u0 = a0 < c0 ? a0 : c0, u1 = a1 > c1 ? a1 : c1;
+            int v0 = l->y < y ? l->y : y, v1 = l->y + l->h > y + h ? l->y + l->h : y + h;
+            long both = (long)(a1 - a0) * l->h + (long)(c1 - c0) * h, box = (long)(u1 - u0) * (v1 - v0);
+            if (box * 4 <= both * 5) {
+                l->x = (int16_t)(u0 * 16); l->w = (int16_t)((u1 - u0) * 16);
+                l->y = (int16_t)v0; l->h = (int16_t)(v1 - v0);
+                return;
+            }
+        }
+    }
+    add(done[b], &ndone[b], &full[b], x, y, w, h);
 }
 
 /* ---- the blits ---------------------------------------------------------------------------------- */
@@ -307,12 +338,13 @@ static void a_cell(int cx, int cy, int win)
         uint8_t p6[6], m;
         cell_row(e, r, p6, &m);
         uint8_t hi = (e & 0x8000) ? m : 0, lo = (e & 0x8000) ? 0 : m;
-        for (int k = 0; k < 6; k++) {
-            uint32_t o = (uint32_t)(y * 6 + k) * AW + (uint32_t)cx;
-            a_img[o] = p6[k];
-            a_hi_m[o] = hi;
-            a_lo_m[o] = lo;
-        }
+        /* (Chip RAM, a byte at a time: only what can show. Where both masks are and were clear the
+         * image is never seen (the cut takes the buffer there), and a mask clear before and after
+         * stays as it is) */
+        uint8_t *pi = a_img + (uint32_t)(y * 6) * AW + (uint32_t)cx;
+        if (m) for (int k = 0; k < 6; k++) pi[k * AW] = p6[k];
+        if (hi || a_hi[y][cx]) { uint8_t *ph = a_hi_m + (pi - a_img); for (int k = 0; k < 6; k++) ph[k * AW] = hi; }
+        if (lo || a_lo[y][cx]) { uint8_t *pl = a_lo_m + (pi - a_img); for (int k = 0; k < 6; k++) pl[k * AW] = lo; }
         a_row_hi[y] = (int16_t)(a_row_hi[y] + (hi != 0) - (a_hi[y][cx] != 0));
         a_row_lo[y] = (int16_t)(a_row_lo[y] + (lo != 0) - (a_lo[y][cx] != 0));
         a_hi[y][cx] = hi;
@@ -382,11 +414,13 @@ static void a_ranges(void)
 /* plane A's cells changed since each buffer was drawn, as screen rectangles (merged along a row, in
  * apend): restored and cut again there, the rest of plane A staying in the buffer */
 
-static void a_changes(int tiles)
+/* all: every cell looked at, its entry against the one it was drawn from (the window moved: a cell of
+ * plane A is the window's now, or the other way round) */
+static void a_changes(int tiles, int all)
 {
     int over = 0;
     for (int cy = 0; cy < SH / 8; cy++) {
-        if (!tiles) {                                     /* (a row with nothing written in either plane: nothing to do) */
+        if (!tiles && !all) {                                     /* (a row with nothing written in either plane: nothing to do) */
             int any = 0;
             const uint8_t *da = &disp.cell_dirty[0][(cy * 64) >> 3], *dw = &disp.cell_dirty[2][(cy * disp.win_w) >> 3];
             for (int j = 0; j <= SW / 8 && !any; j++) any = da[j] | dw[j];
@@ -401,7 +435,7 @@ static void a_changes(int tiles)
                 int win = cx * 8 >= w0 && cx * 8 < w1, i = win ? cy * disp.win_w + cx : cy * 64 + cx, k = win ? 2 : 0;
                 unsigned e = disp.cell[k][i];
                 int td = tiles && tile_dirty_used(e);
-                if ((disp.cell_dirty[k][i >> 3] >> (i & 7) & 1) && e != a_ent[cy][cx]) ch = 1;
+                if ((all || (disp.cell_dirty[k][i >> 3] >> (i & 7) & 1)) && e != a_ent[cy][cx]) ch = 1;
                 if (td) ch = 1;
                 if (ch) a_cell(cx, cy, win);
             }
@@ -717,7 +751,7 @@ static void op_sprite(uint8_t *buf, int b, const struct spr *s, int tiles)
     uint32_t bw = blit_words;
     op_cookie_w(buf, img, mask, SPW, words, x, obj.py0 + y0, y1 - y0);
     obj.w_sprite += blit_words - bw;
-    add(done[b], &ndone[b], &full[b], x & ~15, (obj.py0 + y0) & 255, words * 16, y1 - y0);
+    add_done(b, x & ~15, (obj.py0 + y0) & 255, words * 16, y1 - y0);
 }
 
 /* ---- the CPU's lines: composed eight pixels at a time, shifted into the buffer -------------------- */
@@ -829,18 +863,8 @@ void obj_update(void)
         }
         uint32_t t2 = obj_clock ? obj_clock() : 0;
         int tiles_a = tiles && a_tiles_changed();         /* (a tile plane A or the window uses changed: every cell of A looked at) */
-        if (a_redo) {
-            memset(a_row_lo, 0, sizeof a_row_lo);
-            memset(a_row_hi, 0, sizeof a_row_hi);
-            memset(a_lo, 0, sizeof a_lo);
-            memset(a_hi, 0, sizeof a_hi);
-            a_y0[0] = a_y0[1] = SH;
-            a_y1[0] = a_y1[1] = 0;
-            a_layer();
-            a_ver++;                                      /* (each buffer's plane A restored and cut again whole) */
-            napend[0] = napend[1] = 0;
-            obj.a_redos++;
-        } else if (d->plane_dirty[0] || d->plane_dirty[2] || tiles_a) a_changes(tiles_a);
+        if (a_redo) { a_changes(tiles_a, 1); obj.a_redos++; }   /* (the cells whose entry is another now: as any change of plane A) */
+        else if (d->plane_dirty[0] || d->plane_dirty[2] || tiles_a) a_changes(tiles_a, 0);
         if (obj_clock) { uint32_t t3 = obj_clock(); obj.ph_rink += t2 - t1; obj.ph_a += t3 - t2; }
     }
     PHASE(0);

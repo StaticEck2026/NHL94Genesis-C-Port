@@ -1,4 +1,5 @@
 /* The game's picture on the A1200's own display: see screen.h. */
+#include "blit.h"
 #include "amiga.h"
 #include "libc_amiga.h"
 #include "screen.h"
@@ -193,6 +194,7 @@ int screen_open(int pal, int profile)
     CALL(GfxBase, LVO_WaitTOF);
     CALL(GfxBase, LVO_WaitTOF);
     CALL(GfxBase, LVO_OwnBlitter);
+    blit_regs_lost();
     CALL(GfxBase, LVO_WaitBlit);
     CALL(SysBase, LVO_Forbid);
     saved.vbr = get_vbr();                              /* (0 on a 68020 with Kickstart's own vectors) */

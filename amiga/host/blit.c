@@ -28,17 +28,33 @@ static void hw_wait(void)
     while (CREG(DMACONR) & 0x4000) { }
 }
 
+/* the registers as last written (the blitter keeps them): a blit writes only those that differ, and
+ * its pointers and size (Chip RAM bus cycles: each register write waits for one). Forgotten when the
+ * queue changes hands (blit_async) */
+static struct { UWORD con0, con1, fwm, lwm, amod, bmod, cmod, dmod; } sh;
+static int sh_ok;
 static void start(const struct blit *bl)
 {
-    CREG(BLTCON0) = bl->con0;
-    CREG(BLTCON1) = bl->con1;
-    CREG(BLTAFWM) = bl->fwm;
-    CREG(BLTALWM) = bl->lwm;
-    if (bl->a) { CREGL(BLTAPT) = (ULONG)bl->a; CREG(BLTAMOD) = (UWORD)bl->amod; }
-    if (bl->b) { CREGL(BLTBPT) = (ULONG)bl->b; CREG(BLTBMOD) = (UWORD)bl->bmod; }
-    if (bl->c) { CREGL(BLTCPT) = (ULONG)bl->c; CREG(BLTCMOD) = (UWORD)bl->cmod; }
+    if (!sh_ok) {
+        CREG(BLTCON0) = sh.con0 = bl->con0; CREG(BLTCON1) = sh.con1 = bl->con1;
+        CREG(BLTAFWM) = sh.fwm = bl->fwm; CREG(BLTALWM) = sh.lwm = bl->lwm;
+        CREG(BLTAMOD) = sh.amod = (UWORD)bl->amod; CREG(BLTBMOD) = sh.bmod = (UWORD)bl->bmod;
+        CREG(BLTCMOD) = sh.cmod = (UWORD)bl->cmod; CREG(BLTDMOD) = sh.dmod = (UWORD)bl->dmod;
+        sh_ok = 1;
+    } else {
+        if (sh.con0 != bl->con0) CREG(BLTCON0) = sh.con0 = bl->con0;
+        if (sh.con1 != bl->con1) CREG(BLTCON1) = sh.con1 = bl->con1;
+        if (sh.fwm != bl->fwm) CREG(BLTAFWM) = sh.fwm = bl->fwm;
+        if (sh.lwm != bl->lwm) CREG(BLTALWM) = sh.lwm = bl->lwm;
+        if (bl->a && sh.amod != (UWORD)bl->amod) CREG(BLTAMOD) = sh.amod = (UWORD)bl->amod;
+        if (bl->b && sh.bmod != (UWORD)bl->bmod) CREG(BLTBMOD) = sh.bmod = (UWORD)bl->bmod;
+        if (bl->c && sh.cmod != (UWORD)bl->cmod) CREG(BLTCMOD) = sh.cmod = (UWORD)bl->cmod;
+        if (sh.dmod != (UWORD)bl->dmod) CREG(BLTDMOD) = sh.dmod = (UWORD)bl->dmod;
+    }
+    if (bl->a) CREGL(BLTAPT) = (ULONG)bl->a;
+    if (bl->b) CREGL(BLTBPT) = (ULONG)bl->b;
+    if (bl->c) CREGL(BLTCPT) = (ULONG)bl->c;
     CREGL(BLTDPT) = (ULONG)bl->d;
-    CREG(BLTDMOD) = (UWORD)bl->dmod;
     CREG(BLTSIZV) = bl->h;
     CREG(BLTSIZH) = bl->w;                                /* (starts it) */
 }
@@ -49,9 +65,12 @@ static struct blit q[QN];
 static volatile int qh, qt, running, async;
 static void (*volatile done_fn)(void);
 
+void blit_regs_lost(void) { sh_ok = 0; }
+
 void blit_async(int on)
 {
     blit_wait();
+    sh_ok = 0;                                            /* (someone else may have used the blitter between) */
     async = on;
     CREG(INTREQ) = 0x0040;
     CREG(INTENA) = on ? 0x8040 : 0x0040;                  /* BLIT */
@@ -106,6 +125,7 @@ static inline uint16_t rd(const uint8_t *p) { return (uint16_t)(p[0] << 8 | p[1]
 void blit_wait(void) { }
 void blit_when_done(void (*fn)(void)) { fn(); }
 void blit_async(int on) { (void)on; }
+void blit_regs_lost(void) { }
 void blit_irq(void) { }
 
 void blit_run(const struct blit *bl)
