@@ -769,7 +769,12 @@ void obj_update(void)
     SW = d->width / 8;
     WPX = d->width;
     disp_unstale_used();                                  /* (the sprite table's tiles, behind VRAM: made again if a cell names one) */
-    int rebuild = !active || d->layout_dirty;
+    /* the window's place (registers 17 and 18: an in-match message bar coming and going, most of a
+     * match's layout changes) changes only plane A and the window: that is drawn again in full, the
+     * rink and the buffers stay */
+    const uint32_t win_regs = (1u << 17) | (1u << 18);
+    int rebuild = !active || (d->layout_dirty && (d->layout_regs & ~win_regs));
+    int a_redo = !rebuild && d->layout_dirty;
     int tiles = !rebuild && d->any_tile_dirty && used_tiles_changed();
     if (rebuild) {
         blit_wait();                                      /* (the last pass's blits read the rink) */
@@ -824,7 +829,18 @@ void obj_update(void)
         }
         uint32_t t2 = obj_clock ? obj_clock() : 0;
         int tiles_a = tiles && a_tiles_changed();         /* (a tile plane A or the window uses changed: every cell of A looked at) */
-        if (d->plane_dirty[0] || d->plane_dirty[2] || tiles_a) a_changes(tiles_a);
+        if (a_redo) {
+            memset(a_row_lo, 0, sizeof a_row_lo);
+            memset(a_row_hi, 0, sizeof a_row_hi);
+            memset(a_lo, 0, sizeof a_lo);
+            memset(a_hi, 0, sizeof a_hi);
+            a_y0[0] = a_y0[1] = SH;
+            a_y1[0] = a_y1[1] = 0;
+            a_layer();
+            a_ver++;                                      /* (each buffer's plane A restored and cut again whole) */
+            napend[0] = napend[1] = 0;
+            obj.a_redos++;
+        } else if (d->plane_dirty[0] || d->plane_dirty[2] || tiles_a) a_changes(tiles_a);
         if (obj_clock) { uint32_t t3 = obj_clock(); obj.ph_rink += t2 - t1; obj.ph_a += t3 - t2; }
     }
     PHASE(0);
@@ -924,6 +940,7 @@ void obj_update(void)
     if (d->any_tile_dirty) memset(d->tile_dirty, 0, sizeof d->tile_dirty);
     for (int k = 0; k < 3; k++) if (d->plane_dirty[k]) memset(d->cell_dirty[k], 0, sizeof d->cell_dirty[k]);
     d->any_tile_dirty = d->any_cell_dirty = d->layout_dirty = d->sprites_dirty = d->scroll_dirty = 0;
+    d->layout_regs = 0;
     d->plane_dirty[0] = d->plane_dirty[1] = d->plane_dirty[2] = 0;
 }
 

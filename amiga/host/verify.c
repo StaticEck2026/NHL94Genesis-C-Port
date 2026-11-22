@@ -475,8 +475,8 @@ static void run_one(void)
                                (unsigned long)(obj.ph[3] / obj.updates), (unsigned long)(obj.ph[4] / obj.updates), (unsigned long)(obj.ph[5] / obj.updates));
         if (obj.updates) logf_("%s: SHOW: phase 0 in all, raster lines: the rebuilds %lu (%lu of them), the rink's changed cells %lu, plane A's changes %lu, the first wait %lu\n", t->name,
                                (unsigned long)obj.ph_rebuild, (unsigned long)obj.rebuilds, (unsigned long)obj.ph_rink, (unsigned long)obj.ph_a, (unsigned long)obj.wait_start);
-        if (obj.rebuilds) logf_("%s: SHOW: the rebuilds by part, raster lines: the stale tiles before %lu, the rink %lu, plane A %lu, the wait %lu, the buffers copied %lu\n", t->name,
-                                (unsigned long)obj.rb[0], (unsigned long)obj.rb[1], (unsigned long)obj.rb[2], (unsigned long)obj.rb[3], (unsigned long)obj.rb[4]);
+        if (obj.rebuilds) logf_("%s: SHOW: the rebuilds by part, raster lines: the stale tiles before %lu, the rink %lu, plane A %lu, the wait %lu, the buffers copied %lu; plane A alone drawn again %lu times (the window moved)\n", t->name,
+                                (unsigned long)obj.rb[0], (unsigned long)obj.rb[1], (unsigned long)obj.rb[2], (unsigned long)obj.rb[3], (unsigned long)obj.rb[4], (unsigned long)obj.a_redos);
         logf_("%s: SHOW: waits for the blitter: %lu raster lines in blit_wait (%lu of them inside the scrolled scene's drawing), %lu with the queue full\n", t->name,
               (unsigned long)blit_wait_time, (unsigned long)draw_wait_total, (unsigned long)blit_full_time);
     } else if (profiling) {

@@ -137,7 +137,7 @@ void disp_reg(int r, uint8_t v)
      * these: 1 (display on and off is the copper's business, the bitmap stays up to date behind it;
      * its other bits are interrupts and DMA), 7 (the backdrop is colour 0), 10 (the line interrupt),
      * 11 (the scroll modes: drawn as a scroll change), 15 and 19 on (the requests' own registers) */
-    if (r != 1 && r != 7 && r != 10 && r != 11 && r != 15 && r < 19) { disp.layout_dirty = 1; disp.why[r]++; }
+    if (r != 1 && r != 7 && r != 10 && r != 11 && r != 15 && r < 19) { disp.layout_dirty = 1; disp.layout_regs |= 1u << r; disp.why[r]++; }
 }
 
 void disp_cram(int i, uint16_t c) { disp.pal[i & 63] = c; }

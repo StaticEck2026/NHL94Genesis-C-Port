@@ -41,6 +41,7 @@ struct disp {
     uint8_t tile_dirty[DISP_TILES / 8];                   /* a tile's pixels changed */
     uint8_t cell_dirty[3][DISP_PLANE_CELLS / 8];          /* a cell of A, B or the window was written */
     uint8_t any_tile_dirty, any_cell_dirty, layout_dirty; /* layout_dirty: a register that places or sizes the picture */
+    uint32_t layout_regs;                                 /* which registers set layout_dirty (a bit each, cleared with it) */
     uint8_t plane_dirty[3];                               /* a cell of A, B or the window was written */
     uint8_t scroll_dirty;                                 /* a scroll entry in use was written */
     uint8_t sprites_dirty;                                /* a byte of the sprite table was written */
