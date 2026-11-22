@@ -118,30 +118,42 @@ static inline void copy_par(uint8_t *d, const uint8_t *src, int n)   /* (src at 
     memcpy(d, src, (size_t)n);
 }
 
+static inline uint32_t rev4(uint32_t v)                  /* each byte's bits reversed (a horizontal flip) */
+{
+    return (uint32_t)rev[v >> 24] << 24 | (uint32_t)rev[(v >> 16) & 0xFF] << 16 | (uint32_t)rev[(v >> 8) & 0xFF] << 8 | rev[v & 0xFF];
+}
+
 /* the cells cx0 to cx1 of cell row cy, made in Fast RAM a plane row at a time and copied into the
  * rink bitmap and its mask in longs (Chip RAM byte writes are slow); the first 40 columns again at 64 */
 static void rink_run(int cy, int cx0, int cx1)
 {
     static uint32_t tl[2][8 * 6][(64 + 4) / 4];
+    enum { TS = sizeof tl[0][0] };                        /* (bytes from one plane row of the staging to the next) */
     int n = cx1 - cx0 + 1, par = cx0 & 1;
     obj.rink_cells += (uint32_t)n;
+    const uint16_t *cells = &disp.cell[1][cy * 64];
+    uint32_t hbits[2] = { 0, 0 };
     for (int cx = cx0; cx <= cx1; cx++) {
-        int i = cy * 64 + cx;
-        unsigned e = disp.cell[1][i];
+        unsigned e = cells[cx];
+        const uint32_t *tr = disp.tile[e & 0x7FF];
+        const int vf = (e & 0x1000) != 0, hf = (e & 0x0800) != 0;
+        const uint8_t k4 = (e & 0x2000) ? 0xFF : 0, k5 = (e & 0x4000) ? 0xFF : 0, kh = (e & 0x8000) ? 0xFF : 0;
+        uint8_t *pl = (uint8_t *)tl[0] + par + (cx - cx0), *ph = (uint8_t *)tl[1] + par + (cx - cx0);
         uint8_t any = 0;
-        for (int r = 0; r < 8; r++) {
-            uint8_t p6[6], m;
-            cell_row(e, r, p6, &m);
-            uint8_t hi = (e & 0x8000) ? m : 0;
-            any |= hi;
-            for (int k = 0; k < 6; k++) {
-                ((uint8_t *)tl[0][r * 6 + k])[par + cx - cx0] = p6[k];
-                ((uint8_t *)tl[1][r * 6 + k])[par + cx - cx0] = hi;
-            }
+        for (int r = 0; r < 8; r++, pl += 6 * TS, ph += 6 * TS) {
+            uint32_t v = tr[vf ? 7 - r : r];
+            if (hf) v = rev4(v);
+            uint8_t o = opaque(v), h = o & kh;
+            any |= h;
+            pl[0] = (uint8_t)(v >> 24); pl[TS] = (uint8_t)(v >> 16); pl[2 * TS] = (uint8_t)(v >> 8); pl[3 * TS] = (uint8_t)v;
+            pl[4 * TS] = o & k4; pl[5 * TS] = o & k5;
+            ph[0] = h; ph[TS] = h; ph[2 * TS] = h; ph[3 * TS] = h; ph[4 * TS] = h; ph[5 * TS] = h;
         }
-        rink_hi_cell[i] = any != 0;
-        if (any) rink_hi_row[cy] |= 1ull << cx; else rink_hi_row[cy] &= ~(1ull << cx);
+        rink_hi_cell[cy * 64 + cx] = any != 0;
+        if (any) hbits[cx >> 5] |= 1u << (cx & 31);
     }
+    uint64_t run = col_mask(cx0, cx1);
+    rink_hi_row[cy] = (rink_hi_row[cy] & ~run) | ((uint64_t)hbits[1] << 32 | hbits[0]);
     int n1 = cx0 < 40 ? (cx1 < 40 ? cx1 : 39) - cx0 + 1 : 0;
     for (int r = 0; r < 8; r++)
         for (int k = 0; k < 6; k++) {
@@ -271,13 +283,6 @@ static void window_span(int line, int *x0, int *x1)
     if (disp.reg[17] & 0x80) { *x0 = wx; *x1 = width; } else *x1 = wx;
 }
 
-static int in_window(int cx, int cy)                     /* a screen cell is the window's (its rows and columns are whole cells) */
-{
-    int w0, w1;
-    window_span(cy * 8, &w0, &w1);
-    return cx * 8 >= w0 && cx * 8 < w1;
-}
-
 /* one screen cell of plane A or the window into the A images, and the rows' counts */
 static void a_cell(int cx, int cy, int win)
 {
@@ -304,9 +309,38 @@ static void a_cell(int cx, int cy, int win)
     }
 }
 
-static void a_layer(void)                                 /* all of it */
+/* all of it: as a_cell does, a cell row at a time made in Fast RAM and copied into the images in longs */
+static void a_layer(void)
 {
-    for (int cy = 0; cy < SH / 8; cy++) for (int cx = 0; cx < SW; cx++) a_cell(cx, cy, in_window(cx, cy));
+    static uint8_t st[3][6][SWMAX];                       /* (a line's plane rows: the image, the high mask, the low mask) */
+    for (int cy = 0; cy < SH / 8; cy++) {
+        int w0, w1;
+        window_span(cy * 8, &w0, &w1);
+        for (int r = 0; r < 8; r++) {
+            int y = cy * 8 + r;
+            for (int cx = 0; cx < SW; cx++) {
+                int win = cx * 8 >= w0 && cx * 8 < w1;
+                unsigned e = win ? disp.cell[2][cy * disp.win_w + cx] : disp.cell[0][cy * 64 + cx];
+                if (!r) { a_ent[cy][cx] = (uint16_t)e; obj.a_cells++; }
+                uint8_t p6[6], m;
+                cell_row(e, r, p6, &m);
+                uint8_t hi = (e & 0x8000) ? m : 0, lo = (e & 0x8000) ? 0 : m;
+                for (int k = 0; k < 6; k++) { st[0][k][cx] = p6[k]; st[1][k][cx] = hi; st[2][k][cx] = lo; }
+                a_row_hi[y] = (int16_t)(a_row_hi[y] + (hi != 0) - (a_hi[y][cx] != 0));
+                a_row_lo[y] = (int16_t)(a_row_lo[y] + (lo != 0) - (a_lo[y][cx] != 0));
+                a_hi[y][cx] = hi;
+                a_lo[y][cx] = lo;
+                if (hi) { if (y < a_y0[1]) a_y0[1] = y; if (y >= a_y1[1]) a_y1[1] = y + 1; }
+                if (lo) { if (y < a_y0[0]) a_y0[0] = y; if (y >= a_y1[0]) a_y1[0] = y + 1; }
+            }
+            for (int k = 0; k < 6; k++) {
+                uint32_t o = (uint32_t)(y * 6 + k) * AW;
+                memcpy(a_img + o, st[0][k], (size_t)SW);
+                memcpy(a_hi_m + o, st[1][k], (size_t)SW);
+                memcpy(a_lo_m + o, st[2][k], (size_t)SW);
+            }
+        }
+    }
 }
 
 /* the cells of plane A and the window that were written or show a changed tile (the screen's part:
