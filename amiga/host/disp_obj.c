@@ -806,31 +806,34 @@ static int scene_px0(void)
  * screen, with a margin for the blits' whole words and the sprites at the edges. Most of a match's
  * changes are off it: the plane's 512 pixels against the screen's 256, the rows the game writes ahead
  * of the scroll, the crowd's frames */
-static uint8_t rk_stale[64 * 32 / 8];
+static uint64_t rk_stale[32];                             /* (a cell row each, a bit a column) */
 static void rink_visible(int px0, int py0)
 {
     uint64_t vis = 0;
     int c0 = (px0 - 24) >> 3, c1 = (px0 + WPX + 24) >> 3;
     if (c0 < 0) c0 = 0;
     if (c1 > OBJ_RW - 1) c1 = OBJ_RW - 1;
-    for (int c = c0; c <= c1; c++) vis |= 1ull << (c < 64 ? c : c - 64);
+    if (c1 >= 64) { vis = col_mask(0, c1 - 64); if (c0 < 64) vis |= col_mask(c0, 63); else vis = col_mask(c0 - 64, c1 - 64); }
+    else vis = col_mask(c0, c1);
     for (int j = 0, r0 = (py0 >> 3) - 1; j < SH / 8 + 3; j++) {
-        int cy = (r0 + j) & 31, run0 = -1;
-        const uint8_t *st = &rk_stale[cy * 8];
-        if (!(st[0] | st[1] | st[2] | st[3] | st[4] | st[5] | st[6] | st[7])) continue;
-        for (int cx = 0; cx <= 64; cx++) {
-            int w = cx < 64 && (vis >> cx & 1) && (st[cx >> 3] >> (cx & 7) & 1);
-            if (w && run0 < 0) run0 = cx;
-            if (!w && run0 >= 0) {
-                int y = cy * 8, x0 = run0 * 8, x1 = cx * 8;
-                rink_run(cy, run0, cx - 1, 1);
-                for (int k = run0; k < cx; k++) rk_stale[cy * 8 + (k >> 3)] &= (uint8_t)~(1 << (k & 7));
-                for (int b = 0; b < 2; b++) {             /* (the run's restore: one rectangle, and its copy at 512 for the first 320 pixels) */
-                    add(chg[b], &nchg[b], &full[b], x0, y, x1 - x0, 8);
-                    if (x0 < 320) add(chg[b], &nchg[b], &full[b], x0 + 512, y, (x1 < 320 ? x1 : 320) - x0, 8);
-                }
-                run0 = -1;
+        int cy = (r0 + j) & 31;
+        uint64_t m = rk_stale[cy] & vis;
+        if (!m) continue;
+        rk_stale[cy] &= ~m;
+        uint32_t lo = (uint32_t)m, hi = (uint32_t)(m >> 32);
+        for (int cx = 0; cx < 64;) {                      /* (the runs of set bits) */
+            uint32_t w = cx < 32 ? lo >> cx : hi >> (cx - 32);
+            if (!w) { cx = cx < 32 ? 32 : 64; continue; }
+            cx += __builtin_ctz(w);
+            int e = cx;
+            while (e < 64 && (e < 32 ? lo >> e & 1 : hi >> (e - 32) & 1)) e++;
+            int y = cy * 8, x0 = cx * 8, x1 = e * 8;
+            rink_run(cy, cx, e - 1, 1);
+            for (int b = 0; b < 2; b++) {                 /* (the run's restore: one rectangle, and its copy at 512 for the first 320 pixels) */
+                add(chg[b], &nchg[b], &full[b], x0, y, x1 - x0, 8);
+                if (x0 < 320) add(chg[b], &nchg[b], &full[b], x0 + 512, y, (x1 < 320 ? x1 : 320) - x0, 8);
             }
+            cx = e;
         }
     }
 }
@@ -892,10 +895,15 @@ void obj_update(void)
         int tiles_b = tiles && b_tiles_changed();         /* (a tile the rink uses changed: every cell looked at) */
         if (tiles_b)
             for (int i = 0; i < 64 * 32; i++) {
-                if ((d->cell_dirty[1][i >> 3] >> (i & 7) & 1) || tile_dirty_used(d->cell[1][i])) rk_stale[i >> 3] |= (uint8_t)(1 << (i & 7));
+                if ((d->cell_dirty[1][i >> 3] >> (i & 7) & 1) || tile_dirty_used(d->cell[1][i])) rk_stale[i >> 6] |= 1ull << (i & 63);
             }
         else if (d->plane_dirty[1])
-            for (int j = 0; j < 64 * 32 / 8; j++) rk_stale[j] |= d->cell_dirty[1][j];
+            for (int cy = 0; cy < 32; cy++) {
+                const uint8_t *cd = &d->cell_dirty[1][cy * 8];
+                uint32_t lo = (uint32_t)cd[0] | (uint32_t)cd[1] << 8 | (uint32_t)cd[2] << 16 | (uint32_t)cd[3] << 24;
+                uint32_t hi = (uint32_t)cd[4] | (uint32_t)cd[5] << 8 | (uint32_t)cd[6] << 16 | (uint32_t)cd[7] << 24;
+                if (lo | hi) rk_stale[cy] |= (uint64_t)hi << 32 | lo;
+            }
         rink_visible(scene_px0(), d->vs[1] & 255);
         uint32_t t2 = obj_clock ? obj_clock() : 0;
         int tiles_a = tiles && a_tiles_changed();         /* (a tile plane A or the window uses changed: every cell of A looked at) */
