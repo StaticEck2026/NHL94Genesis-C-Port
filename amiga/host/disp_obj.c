@@ -38,6 +38,11 @@ static uint8_t *spr_img, *spr_mask;                       /* the sprite images, 
  * frame share one image, and frames that come round again are found (they were cached by link number) */
 static struct { uint32_t key, used; uint8_t valid; } spr_key[NSPR];
 static uint32_t pass_no;
+/* which cached images take in each tile (a bit a slot), so that a changed tile drops just the images
+ * that show it, without every slot's tiles looked up each pass (the players' frames change tiles
+ * every pass). A bit may outlive its image (no harm: an image built again); it never misses one */
+static uint32_t tslot[DISP_TILES][NSPR / 32];
+static uint16_t slot_t0[NSPR], slot_n[NSPR];
 static uint8_t rev[256];
 static uint8_t rink_hi_cell[64 * 32];                     /* a rink cell has high-priority pixels */
 static uint64_t rink_hi_row[32];                          /* the same, a bit a column, a cell row each */
@@ -511,6 +516,10 @@ static inline uint32_t spr_keyof(const struct spr *s) { return (s->e & 0x7FFFu) 
 
 static void spr_build(const struct spr *s, int slot)
 {
+    for (unsigned i = 0; i < slot_n[slot]; i++) tslot[(slot_t0[slot] + i) & (DISP_TILES - 1)][slot >> 5] &= ~(1u << (slot & 31));
+    slot_t0[slot] = (uint16_t)(s->e & 0x7FF);
+    slot_n[slot] = (uint16_t)((s->w / 8) * (s->h / 8));
+    for (unsigned i = 0; i < slot_n[slot]; i++) tslot[(slot_t0[slot] + i) & (DISP_TILES - 1)][slot >> 5] |= 1u << (slot & 31);
     int sw = s->w / 8, sh = s->h / 8;
     static uint32_t ti[SPR_BYTES / 4], tm[SPR_BYTES / 4];  /* (made in Fast RAM, then copied a long at a time: Chip RAM byte writes are slow) */
     uint8_t *img = (uint8_t *)ti, *mask = (uint8_t *)tm;
@@ -535,13 +544,6 @@ static void spr_build(const struct spr *s, int slot)
     spr_key[slot].key = spr_keyof(s);
     spr_key[slot].used = pass_no;
     spr_key[slot].valid = 1;
-}
-
-static int spr_tiles_dirty(const struct spr *s)
-{
-    int n = (s->w / 8) * (s->h / 8);
-    for (int t = 0; t < n; t++) if (tile_dirty_used(((s->e & 0x7FF) + (unsigned)t) & 0x7FF)) return 1;
-    return 0;
 }
 
 /* eight pixels (six plane bytes and a mask, the left pixel in bit 7) into the buffer at pixel x of line y */
@@ -757,11 +759,16 @@ void obj_update(void)
     PHASE(1);
     sprite_list();
     if (d->any_tile_dirty)                                /* the cached sprite images that show a changed tile, drawn this pass or not */
-        for (int i = 0; i < NSPR; i++) {
-            if (!spr_key[i].valid) continue;
-            unsigned size = spr_key[i].key >> 16;
-            struct spr k = { 0, 0, (int)(size >> 4) * 8, (int)(size & 15) * 8, 0, i, spr_key[i].key & 0x7FFFu };
-            if (spr_tiles_dirty(&k)) spr_key[i].valid = 0;
+        for (int i = 0; i < DISP_TILES / 8; i++) {
+            unsigned m = d->tile_dirty[i];
+            while (m) {
+                int t = i * 8 + __builtin_ctz(m);
+                m &= m - 1;
+                for (int w = 0; w < NSPR / 32; w++) {
+                    uint32_t bits = tslot[t][w];
+                    while (bits) { int sl = w * 32 + __builtin_ctz(bits); bits &= bits - 1; spr_key[sl].valid = 0; }
+                }
+            }
         }
     if (stay)
         for (int i = 0; i < nsp; i++)
