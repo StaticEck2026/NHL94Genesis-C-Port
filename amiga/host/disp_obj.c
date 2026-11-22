@@ -146,6 +146,26 @@ static inline uint32_t rev4(uint32_t v)                  /* each byte's bits rev
 
 /* the cells cx0 to cx1 of cell row cy, made in Fast RAM a plane row at a time and copied into the
  * rink bitmap and its mask in longs (Chip RAM byte writes are slow); the first 40 columns again at 64 */
+/* a cell's eight rows into the staging (plane rows TS bytes apart): the four planes, the palette's two
+ * (k4, k5: 0 or 0xFF), each row's opaque pixels in o8. hf: the rows' bits reversed (a horizontal flip) */
+static inline uint32_t rink_cell_rows(uint8_t *pl, const uint32_t *tr, int step, uint32_t k4, uint32_t k5, uint8_t *o8, int hf, int TS)
+{
+    uint32_t any = 0;
+    for (int r = 0; r < 8; r++, tr += step, pl += 6 * TS) {
+        uint32_t v = *tr;
+        if (hf) v = rev4(v);
+        uint32_t o = v | v >> 16;
+        o = (o | o >> 8) & 0xFF;
+        pl[0] = (uint8_t)(v >> 24); pl[TS] = (uint8_t)(v >> 16); pl[2 * TS] = (uint8_t)(v >> 8); pl[3 * TS] = (uint8_t)v;
+        pl[4 * TS] = (uint8_t)(o & k4); pl[5 * TS] = (uint8_t)(o & k5);
+        o8[r] = (uint8_t)o;
+        any |= o;
+    }
+    return any;
+}
+
+/* the cells cx0 to cx1 of cell row cy, made in Fast RAM a plane row at a time and copied into the
+ * rink bitmap and its mask in longs (Chip RAM byte writes are slow); the first 40 columns again at 64 */
 static void rink_run(int cy, int cx0, int cx1, int dup)
 {
     chip_wait();
@@ -154,26 +174,28 @@ static void rink_run(int cy, int cx0, int cx1, int dup)
     int n = cx1 - cx0 + 1, par = cx0 & 1;
     obj.rink_cells += (uint32_t)n;
     const uint16_t *cells = &disp.cell[1][cy * 64];
+    uint8_t *hic = &rink_hi_cell[cy * 64];
+    int hseen = 0;                                        /* (high pixels before or possible now: the mask's bytes made and written) */
+    for (int cx = cx0; cx <= cx1; cx++) hseen |= hic[cx] | (cells[cx] & 0x8000);
     uint32_t hbits[2] = { 0, 0 };
-    uint8_t hseen = 0;
     for (int cx = cx0; cx <= cx1; cx++) {
         unsigned e = cells[cx];
         const uint32_t *tr = disp.tile[e & 0x7FF];
-        const int vf = (e & 0x1000) != 0, hf = (e & 0x0800) != 0;
-        const uint8_t k4 = (e & 0x2000) ? 0xFF : 0, k5 = (e & 0x4000) ? 0xFF : 0, kh = (e & 0x8000) ? 0xFF : 0;
-        uint8_t *pl = (uint8_t *)tl[0] + par + (cx - cx0), *ph = (uint8_t *)tl[1] + par + (cx - cx0);
-        uint8_t any = 0;
-        for (int r = 0; r < 8; r++, pl += 6 * TS, ph += 6 * TS) {
-            uint32_t v = tr[vf ? 7 - r : r];
-            if (hf) v = rev4(v);
-            uint8_t o = opaque(v), h = o & kh;
-            any |= h;
-            pl[0] = (uint8_t)(v >> 24); pl[TS] = (uint8_t)(v >> 16); pl[2 * TS] = (uint8_t)(v >> 8); pl[3 * TS] = (uint8_t)v;
-            pl[4 * TS] = o & k4; pl[5 * TS] = o & k5;
-            ph[0] = h; ph[TS] = h; ph[2 * TS] = h; ph[3 * TS] = h; ph[4 * TS] = h; ph[5 * TS] = h;
+        int step = 1;
+        if (e & 0x1000) { tr += 7; step = -1; }
+        const uint32_t k4 = (e & 0x2000) ? 0xFF : 0, k5 = (e & 0x4000) ? 0xFF : 0;
+        uint8_t *pl = (uint8_t *)tl[0] + par + (cx - cx0);
+        uint8_t o8[8];
+        uint32_t any = (e & 0x0800) ? rink_cell_rows(pl, tr, step, k4, k5, o8, 1, TS) : rink_cell_rows(pl, tr, step, k4, k5, o8, 0, TS);
+        if (!(e & 0x8000)) any = 0;
+        if (hseen) {
+            uint8_t *ph = (uint8_t *)tl[1] + par + (cx - cx0);
+            for (int r = 0; r < 8; r++, ph += 6 * TS) {
+                uint8_t h = any ? o8[r] : 0;
+                ph[0] = h; ph[TS] = h; ph[2 * TS] = h; ph[3 * TS] = h; ph[4 * TS] = h; ph[5 * TS] = h;
+            }
         }
-        hseen |= rink_hi_cell[cy * 64 + cx] | any;        /* (high pixels before or now: the mask's bytes written) */
-        rink_hi_cell[cy * 64 + cx] = any != 0;
+        hic[cx] = any != 0;
         if (any) hbits[cx >> 5] |= 1u << (cx & 31);
     }
     uint64_t run = col_mask(cx0, cx1);
