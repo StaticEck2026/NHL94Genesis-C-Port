@@ -718,7 +718,9 @@ void obj_update(void)
     int rebuild = !active || d->layout_dirty;
     int tiles = !rebuild && d->any_tile_dirty && used_tiles_changed();
     if (rebuild) {
+        uint32_t r0 = obj_clock ? obj_clock() : 0;
         for (int cy = 0; cy < 32; cy++) rink_run(cy, 0, 63);
+        uint32_t r1 = obj_clock ? obj_clock() : 0;
         memset(a_row_lo, 0, sizeof a_row_lo);
         memset(a_row_hi, 0, sizeof a_row_hi);
         memset(a_lo, 0, sizeof a_lo);
@@ -729,9 +731,12 @@ void obj_update(void)
         a_ver++;
         napend[0] = napend[1] = 0;
         memset(spr_key, 0, sizeof spr_key);
+        uint32_t r2 = obj_clock ? obj_clock() : 0;
         blit_wait();
+        uint32_t r3 = obj_clock ? obj_clock() : 0;
         memcpy(obj.buf[0], obj.rink, OBJ_BYTES);
         memcpy(obj.buf[1], obj.rink, OBJ_BYTES);
+        if (obj_clock) { uint32_t r4 = obj_clock(); obj.rb[0] += r0 - ph_last; obj.rb[1] += r1 - r0; obj.rb[2] += r2 - r1; obj.rb[3] += r3 - r2; obj.rb[4] += r4 - r3; }
         ndone[0] = ndone[1] = nchg[0] = nchg[1] = nadone[0] = nadone[1] = full[0] = full[1] = 0;
         abox[0].on = abox[1].on = 0;
         active = 1;
