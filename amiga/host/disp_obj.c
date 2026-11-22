@@ -792,6 +792,49 @@ static void mark_rect(uint8_t *rows, const struct rect *r)   /* the screen pixel
     if (end > 256) mark_lines(rows, 0, end - 256, x0, x1);
 }
 
+/* the buffers' pixel at the screen's left edge. (The buffer's first 320 pixels are there again from
+ * 512: a 256-pixel picture at the left edge is shown from that copy, so that the sprites partly left of
+ * the screen are blitted, not drawn by the CPU after the blitter's queue has run out) */
+static int scene_px0(void)
+{
+    int px0 = (512 - disp_hscroll(0, 1)) & 511;
+    if (px0 < 32 && px0 + 512 + WPX + 16 <= OBJ_RW * 8) px0 += 512;
+    return px0;
+}
+
+/* the rink's cells changed and not yet made (a bit each): a cell is made when it comes onto the
+ * screen, with a margin for the blits' whole words and the sprites at the edges. Most of a match's
+ * changes are off it: the plane's 512 pixels against the screen's 256, the rows the game writes ahead
+ * of the scroll, the crowd's frames */
+static uint8_t rk_stale[64 * 32 / 8];
+static void rink_visible(int px0, int py0)
+{
+    uint64_t vis = 0;
+    int c0 = (px0 - 24) >> 3, c1 = (px0 + WPX + 24) >> 3;
+    if (c0 < 0) c0 = 0;
+    if (c1 > OBJ_RW - 1) c1 = OBJ_RW - 1;
+    for (int c = c0; c <= c1; c++) vis |= 1ull << (c < 64 ? c : c - 64);
+    for (int j = 0, r0 = (py0 >> 3) - 1; j < SH / 8 + 3; j++) {
+        int cy = (r0 + j) & 31, run0 = -1;
+        const uint8_t *st = &rk_stale[cy * 8];
+        if (!(st[0] | st[1] | st[2] | st[3] | st[4] | st[5] | st[6] | st[7])) continue;
+        for (int cx = 0; cx <= 64; cx++) {
+            int w = cx < 64 && (vis >> cx & 1) && (st[cx >> 3] >> (cx & 7) & 1);
+            if (w && run0 < 0) run0 = cx;
+            if (!w && run0 >= 0) {
+                int y = cy * 8, x0 = run0 * 8, x1 = cx * 8;
+                rink_run(cy, run0, cx - 1, 1);
+                for (int k = run0; k < cx; k++) rk_stale[cy * 8 + (k >> 3)] &= (uint8_t)~(1 << (k & 7));
+                for (int b = 0; b < 2; b++) {             /* (the run's restore: one rectangle, and its copy at 512 for the first 320 pixels) */
+                    add(chg[b], &nchg[b], &full[b], x0, y, x1 - x0, 8);
+                    if (x0 < 320) add(chg[b], &nchg[b], &full[b], x0 + 512, y, (x1 < 320 ? x1 : 320) - x0, 8);
+                }
+                run0 = -1;
+            }
+        }
+    }
+}
+
 static uint32_t ph_last;
 #define PHASE(k) do { if (obj_clock) { uint32_t now_ = obj_clock(); obj.ph[k] += now_ - ph_last; ph_last = now_; } } while (0)
 void obj_update(void)
@@ -814,6 +857,7 @@ void obj_update(void)
         blit_wait();                                      /* (the last pass's blits read the rink) */
         uint32_t r0 = obj_clock ? obj_clock() : 0;
         for (int cy = 0; cy < 32; cy++) rink_run(cy, 0, 63, 0);
+        memset(rk_stale, 0, sizeof rk_stale);
         uint32_t r1 = obj_clock ? obj_clock() : 0;
         memset(a_row_lo, 0, sizeof a_row_lo);
         memset(a_row_hi, 0, sizeof a_row_hi);
@@ -844,23 +888,15 @@ void obj_update(void)
         blit_wait();                                      /* (the CPU writes the bitmaps the blits read) */
         if (obj_clock) obj.wait_start += obj_clock() - t0;
         uint32_t t1 = obj_clock ? obj_clock() : 0;
-        int run0 = -1;                                    /* the rink's cells that changed, in runs along their rows */
+        /* the rink's cells that changed: marked, and made when they are on the screen (below) */
         int tiles_b = tiles && b_tiles_changed();         /* (a tile the rink uses changed: every cell looked at) */
-        for (int i = 0; i < 64 * 32; i++) {
-            if (!tiles_b && !d->plane_dirty[1]) break;
-            int w = (d->cell_dirty[1][i >> 3] >> (i & 7) & 1) || (tiles_b && tile_dirty_used(d->cell[1][i]));
-            if (w && run0 < 0) run0 = i;
-            if (run0 >= 0 && (!w || (i & 63) == 63)) {
-                int c0 = run0 & 63, c1 = w ? (i & 63) : (i & 63) - 1, y = (run0 >> 6) * 8, x0 = c0 * 8, x1 = (c1 + 1) * 8;
-                rink_run(run0 >> 6, c0, c1, 1);
-                for (int b = 0; b < 2; b++) {                 /* (the run's restore: one rectangle, and its copy at 512 for the first 320 pixels) */
-                    add(chg[b], &nchg[b], &full[b], x0, y, x1 - x0, 8);
-                    if (x0 < 320) add(chg[b], &nchg[b], &full[b], x0 + 512, y, (x1 < 320 ? x1 : 320) - x0, 8);
-                }
-                run0 = -1;
+        if (tiles_b)
+            for (int i = 0; i < 64 * 32; i++) {
+                if ((d->cell_dirty[1][i >> 3] >> (i & 7) & 1) || tile_dirty_used(d->cell[1][i])) rk_stale[i >> 3] |= (uint8_t)(1 << (i & 7));
             }
-            if (!tiles_b && !(i & 7) && !d->cell_dirty[1][i >> 3] && run0 < 0) i += 7;
-        }
+        else if (d->plane_dirty[1])
+            for (int j = 0; j < 64 * 32 / 8; j++) rk_stale[j] |= d->cell_dirty[1][j];
+        rink_visible(scene_px0(), d->vs[1] & 255);
         uint32_t t2 = obj_clock ? obj_clock() : 0;
         int tiles_a = tiles && a_tiles_changed();         /* (a tile plane A or the window uses changed: every cell of A looked at) */
         if (a_redo) { a_changes(tiles_a, 1); obj.a_redos++; }   /* (the cells whose entry is another now: as any change of plane A) */
@@ -886,11 +922,7 @@ void obj_update(void)
     PHASE(2);
     int b = obj.shown ^ 1;
     uint8_t *buf = obj.buf[b];
-    obj.px0 = (512 - disp_hscroll(0, 1)) & 511;
-    /* (the buffer's first 320 pixels are there again from 512: a 256-pixel picture at the left edge is
-     * shown from that copy, so that the sprites partly left of the screen are blitted, not drawn by the
-     * CPU after the blitter's queue has run out) */
-    if (obj.px0 < 32 && obj.px0 + 512 + WPX + 16 <= OBJ_RW * 8) obj.px0 += 512;
+    obj.px0 = scene_px0();
     obj.py0 = d->vs[1] & 255;
     /* plane A stays in this buffer when the scroll and plane A are what they were when it was drawn:
      * then it is drawn again only on the lines where something is restored or drawn */
