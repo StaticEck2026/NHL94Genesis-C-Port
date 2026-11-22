@@ -26,7 +26,8 @@ OBJS    := $(B)/start.o $(B)/boot.o $(B)/libc.o
 BESRC   := $(B)/src-be
 # -flto: the game's calls into amiga/host/hal_core.c (a word to the VDP, a pad read) are inlined into its
 # loops at link time; measured (emulated A1200) 12 to 23% less time a pass than without
-GFLAGS  := -mcpu=68020 -msoft-float -O2 -flto -fomit-frame-pointer -fno-pic -fno-common -fno-asynchronous-unwind-tables \
+GOPT    ?= -O2
+GFLAGS  := -mcpu=68020 -msoft-float $(GOPT) -flto -fomit-frame-pointer -fno-pic -fno-common -fno-asynchronous-unwind-tables \
            --param=min-pagesize=0 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -std=gnu11 -Wall -Wextra -Wshadow \
            -Wstrict-prototypes -Wmissing-prototypes -Wno-unused-parameter -Werror -I$(BESRC) -Ihost -I$(B)
 # src/ under the m68k ABI only: ram.c's little-endian table is unused on a big-endian machine, and
@@ -61,7 +62,7 @@ $(B)/game/%.o: ../src/%.c $(BESRC)/.stamp
 $(B)/verify.o $(B)/hal_core.o $(B)/libc_amiga.o $(B)/prof.o $(B)/hot.o $(B)/disp_core.o $(B)/disp_draw.o $(B)/disp_obj.o $(B)/blit.o $(B)/screen.o $(B)/input.o $(B)/pace.o $(B)/hostmenu.o $(B)/sound.o $(B)/fmpatch.o $(B)/audio.o: $(B)/%.o: host/%.c host/hal_core.h host/hash.h host/libc_amiga.h host/prof.h host/amiga.h host/disp_core.h host/disp_draw.h host/disp_obj.h host/blit.h host/screen.h host/input.h host/pace.h host/hostmenu.h host/sound.h host/fmpatch.h host/fmtab.h host/audio.h $(B)/version.h $(BESRC)/.stamp
 	$(CC) $(GFLAGS) -c $< -o $@
 $(B)/NHL94VFY.elf: $(VOBJS) host/amiga.ld
-	$(CC) -mcpu=68020 -msoft-float -O2 -flto -fno-pic -nostdlib -static -Wl,-T,host/amiga.ld -Wl,--emit-relocs \
+	$(CC) -mcpu=68020 -msoft-float $(GOPT) -flto -fno-pic -nostdlib -static -Wl,-T,host/amiga.ld -Wl,--emit-relocs \
 	    -Wl,--build-id=none -Wl,-Map,$(B)/NHL94VFY.map -o $@ $(VOBJS) -lgcc
 $(B)/NHL94VFY: $(B)/NHL94VFY.elf tools/elf2hunk.py
 	$(PY) tools/elf2hunk.py $< $@
