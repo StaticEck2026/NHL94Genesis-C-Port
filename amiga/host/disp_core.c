@@ -334,9 +334,38 @@ static const uint32_t *tile_planar(uint32_t off)          /* off: inside the car
     return rows;
 }
 
+/* the whole sprite table in one block (the game sends it every pass): an entry at a time, those the same
+ * as before (and as latched) skipped; the others into the mirrors and VRAM's raw copy, their tiles stale
+ * (sprite_word's work for each word, eight bytes at a time). -> 0: not such a block */
+static int sat_block(uint16_t a, const uint8_t *src, uint32_t words)
+{
+    struct disp *d = &disp;
+    uint32_t off = (uint16_t)(a - d->sprites), n = 2 * words;
+    if ((off & 7) || (n & 7) || off + n > d->sprites_size) return 0;
+    for (uint32_t b = (uint32_t)a >> 6; b <= ((uint32_t)a + n - 1) >> 6; b++) if (d->special[b & 0x3FF] != 2) return 0;
+    for (uint32_t o = off; o < off + n; o += 8, src += 8) {
+        uint8_t *sp = &d->spr[o], *st = &d->sat[o];
+        if (!memcmp(sp, src, 8) && !memcmp(st, src, 4)) continue;
+        if (memcmp(st, src, 4)) { memcpy(st, src, 4); d->sprites_dirty = 1; }
+        if (memcmp(sp, src, 8)) {
+            memcpy(sp, src, 8);
+            d->sprites_dirty = 1;
+            uint16_t va = (uint16_t)(d->sprites + o);
+            memcpy(&vraw[va], src, 8);                    /* (a tile is 32 bytes: an entry is in one) */
+            unsigned t = va >> 5;
+            tstale[t >> 3] |= (uint8_t)(1 << (t & 7));
+            disp_any_stale = 1;
+            if (t < disp_stale_lo) disp_stale_lo = t;
+            if (t > disp_stale_hi) disp_stale_hi = t;
+        }
+    }
+    return 1;
+}
+
 void disp_vram_block(uint16_t a, const uint8_t *src, uint32_t words)
 {
     if (a & 1) { for (uint32_t k = 0; k < 2 * words; k++) put((uint16_t)(a + k), src[k]); return; }
+    if (disp.special[a >> 6] == 2 && sat_block(a, src, words)) return;
     if (cart && src >= cart && src < cart + cart_size && !((uint32_t)(src - cart) & 1) && !(a & 31)) {
         while (words >= 16 && !disp.special[a >> 6] && (uint32_t)(src - cart) + 32 <= cart_size) {   /* (whole tiles, in tiles-only VRAM) */
             const uint32_t *pl = tile_planar((uint32_t)(src - cart));
