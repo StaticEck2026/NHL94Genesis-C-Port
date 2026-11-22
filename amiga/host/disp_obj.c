@@ -125,7 +125,7 @@ static inline uint32_t rev4(uint32_t v)                  /* each byte's bits rev
 
 /* the cells cx0 to cx1 of cell row cy, made in Fast RAM a plane row at a time and copied into the
  * rink bitmap and its mask in longs (Chip RAM byte writes are slow); the first 40 columns again at 64 */
-static void rink_run(int cy, int cx0, int cx1)
+static void rink_run(int cy, int cx0, int cx1, int dup)
 {
     static uint32_t tl[2][8 * 6][(64 + 4) / 4];
     enum { TS = sizeof tl[0][0] };                        /* (bytes from one plane row of the staging to the next) */
@@ -154,7 +154,7 @@ static void rink_run(int cy, int cx0, int cx1)
     }
     uint64_t run = col_mask(cx0, cx1);
     rink_hi_row[cy] = (rink_hi_row[cy] & ~run) | ((uint64_t)hbits[1] << 32 | hbits[0]);
-    int n1 = cx0 < 40 ? (cx1 < 40 ? cx1 : 39) - cx0 + 1 : 0;
+    int n1 = dup && cx0 < 40 ? (cx1 < 40 ? cx1 : 39) - cx0 + 1 : 0;   /* (dup 0: the copy at 64 left to the caller) */
     for (int r = 0; r < 8; r++)
         for (int k = 0; k < 6; k++) {
             uint32_t o = (uint32_t)(cy * 8 + r) * OBJ_LS + (uint32_t)k * OBJ_RW + (uint32_t)cx0;
@@ -201,6 +201,19 @@ static void blit_rect(uint8_t *dst, const uint8_t *src_a, const uint8_t *src_b, 
         y = 0;
     }
     obj.restored++;
+}
+/* a copy of `rows` rows of `words` words, `mod` bytes skipped after each on both sides */
+static void blit_area(uint8_t *dst, const uint8_t *src, int words, int rows, int mod)
+{
+    struct blit bl = { 0 };
+    bl.a = src;
+    bl.d = dst;
+    bl.amod = bl.dmod = (int16_t)mod;
+    bl.con0 = BC0_USEA | BC0_USED | MINTERM_COPY_A;
+    bl.fwm = bl.lwm = 0xFFFF;
+    bl.w = (uint16_t)words;
+    bl.h = (uint16_t)rows;
+    blit_run(&bl);
 }
 static void op_copy(uint8_t *buf, const struct rect *r)  /* the rink bitmap into a buffer */
 {
@@ -316,12 +329,19 @@ static void a_layer(void)
     for (int cy = 0; cy < SH / 8; cy++) {
         int w0, w1;
         window_span(cy * 8, &w0, &w1);
+        uint16_t ent[SWMAX];
+        for (int cx = 0; cx < SW; cx++) {
+            int win = cx * 8 >= w0 && cx * 8 < w1;
+            ent[cx] = win ? disp.cell[2][cy * disp.win_w + cx] : disp.cell[0][cy * 64 + cx];
+            a_ent[cy][cx] = ent[cx];
+            obj.a_cells++;
+        }
         for (int r = 0; r < 8; r++) {
             int y = cy * 8 + r;
+            memset(st, 0, sizeof st);
             for (int cx = 0; cx < SW; cx++) {
-                int win = cx * 8 >= w0 && cx * 8 < w1;
-                unsigned e = win ? disp.cell[2][cy * disp.win_w + cx] : disp.cell[0][cy * 64 + cx];
-                if (!r) { a_ent[cy][cx] = (uint16_t)e; obj.a_cells++; }
+                unsigned e = ent[cx];
+                if (!disp.tile[e & 0x7FF][(e & 0x1000) ? 7 - r : r]) continue;   /* (a blank row: nothing; the counts and masks were cleared) */
                 uint8_t p6[6], m;
                 cell_row(e, r, p6, &m);
                 uint8_t hi = (e & 0x8000) ? m : 0, lo = (e & 0x8000) ? 0 : m;
@@ -752,8 +772,9 @@ void obj_update(void)
     int rebuild = !active || d->layout_dirty;
     int tiles = !rebuild && d->any_tile_dirty && used_tiles_changed();
     if (rebuild) {
+        blit_wait();                                      /* (the last pass's blits read the rink) */
         uint32_t r0 = obj_clock ? obj_clock() : 0;
-        for (int cy = 0; cy < 32; cy++) rink_run(cy, 0, 63);
+        for (int cy = 0; cy < 32; cy++) rink_run(cy, 0, 63, 0);
         uint32_t r1 = obj_clock ? obj_clock() : 0;
         memset(a_row_lo, 0, sizeof a_row_lo);
         memset(a_row_hi, 0, sizeof a_row_hi);
@@ -766,10 +787,13 @@ void obj_update(void)
         napend[0] = napend[1] = 0;
         memset(spr_key, 0, sizeof spr_key);
         uint32_t r2 = obj_clock ? obj_clock() : 0;
-        blit_wait();
         uint32_t r3 = obj_clock ? obj_clock() : 0;
-        memcpy(obj.buf[0], obj.rink, OBJ_BYTES);
-        memcpy(obj.buf[1], obj.rink, OBJ_BYTES);
+        /* the blitter copies: the rink's first 320 pixels again at 512 (the bitmap and its mask), then
+         * the rink into both buffers (Chip RAM the CPU writes at about 2 MB/s with the screen up) */
+        blit_area(obj.rink + 64, obj.rink, 20, OBJ_RH * 6, OBJ_RW - 40);
+        blit_area(obj.rink_hi + 64, obj.rink_hi, 20, OBJ_RH * 6, OBJ_RW - 40);
+        blit_area(obj.buf[0], obj.rink, OBJ_RW / 2, OBJ_RH * 6, 0);
+        blit_area(obj.buf[1], obj.rink, OBJ_RW / 2, OBJ_RH * 6, 0);
         if (obj_clock) { uint32_t r4 = obj_clock(); obj.rb[0] += r0 - ph_last; obj.rb[1] += r1 - r0; obj.rb[2] += r2 - r1; obj.rb[3] += r3 - r2; obj.rb[4] += r4 - r3; }
         ndone[0] = ndone[1] = nchg[0] = nchg[1] = nadone[0] = nadone[1] = full[0] = full[1] = 0;
         abox[0].on = abox[1].on = 0;
@@ -789,7 +813,7 @@ void obj_update(void)
             if (w && run0 < 0) run0 = i;
             if (run0 >= 0 && (!w || (i & 63) == 63)) {
                 int c0 = run0 & 63, c1 = w ? (i & 63) : (i & 63) - 1, y = (run0 >> 6) * 8, x0 = c0 * 8, x1 = (c1 + 1) * 8;
-                rink_run(run0 >> 6, c0, c1);
+                rink_run(run0 >> 6, c0, c1, 1);
                 for (int b = 0; b < 2; b++) {                 /* (the run's restore: one rectangle, and its copy at 512 for the first 320 pixels) */
                     add(chg[b], &nchg[b], &full[b], x0, y, x1 - x0, 8);
                     if (x0 < 320) add(chg[b], &nchg[b], &full[b], x0 + 512, y, (x1 < 320 ? x1 : 320) - x0, 8);
@@ -834,7 +858,7 @@ void obj_update(void)
     static uint8_t rows[SH];
     memset(rows, !stay, sizeof rows);
     if (!stay) for (int y = 0; y < SH; y++) { row_x0[y] = 0; row_x1[y] = (int16_t)WPX; }
-    if (full[b]) { blit_wait(); memcpy(buf, obj.rink, OBJ_BYTES); }
+    if (full[b]) blit_area(buf, obj.rink, OBJ_RW / 2, OBJ_RH * 6, 0);
     else {
         for (int i = 0; i < ndone[b]; i++) { op_copy(buf, &done[b][i]); if (stay) mark_rect(rows, &done[b][i]); }
         for (int i = 0; i < nchg[b]; i++) { op_copy(buf, &chg[b][i]); if (stay) mark_rect(rows, &chg[b][i]); }
