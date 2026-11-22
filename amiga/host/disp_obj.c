@@ -37,7 +37,7 @@ static uint8_t *spr_img, *spr_mask;                       /* the sprite images, 
  * is not part of the picture), and the pass that last used it. Players of a team showing the same
  * frame share one image, and frames that come round again are found (they were cached by link number) */
 static struct { uint32_t key, used; uint8_t valid; } spr_key[NSPR];
-static uint32_t pass_no;
+static uint32_t pass_no, spr_drawn[NSPR];               /* (and the pass each slot was last blitted in)*/
 /* which cached images take in each tile (a bit a slot), so that a changed tile drops just the images
  * that show it, without every slot's tiles looked up each pass (the players' frames change tiles
  * every pass). A bit may outlive its image (no harm: an image built again); it never misses one */
@@ -514,36 +514,79 @@ static void sprite_list(void)
  * below it not touched (no blit reads them) */
 static inline uint32_t spr_keyof(const struct spr *s) { return (s->e & 0x7FFFu) | (uint32_t)((s->w / 8) << 4 | s->h / 8) << 16; }
 
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#define BE(v) (v)
+#else
+#define BE(v) __builtin_bswap32(v)                        /* (the host: its memory read as the Amiga's, big-endian) */
+#endif
 static void spr_build(const struct spr *s, int slot)
 {
     for (unsigned i = 0; i < slot_n[slot]; i++) tslot[(slot_t0[slot] + i) & (DISP_TILES - 1)][slot >> 5] &= ~(1u << (slot & 31));
     slot_t0[slot] = (uint16_t)(s->e & 0x7FF);
     slot_n[slot] = (uint16_t)((s->w / 8) * (s->h / 8));
     for (unsigned i = 0; i < slot_n[slot]; i++) tslot[(slot_t0[slot] + i) & (DISP_TILES - 1)][slot >> 5] |= 1u << (slot & 31);
-    int sw = s->w / 8, sh = s->h / 8;
-    static uint32_t ti[SPR_BYTES / 4], tm[SPR_BYTES / 4];  /* (made in Fast RAM, then copied a long at a time: Chip RAM byte writes are slow) */
-    uint8_t *img = (uint8_t *)ti, *mask = (uint8_t *)tm;
     obj.sprite_builds++;
-    for (int ty = 0; ty < s->h; ty++) {
-        int row = (s->e & 0x1000) ? s->h - 1 - ty : ty;
-        uint8_t *pi = img + (uint32_t)ty * 6 * SPW, *pm = mask + (uint32_t)ty * 6 * SPW;
-        memset(pi, 0, 6 * SPW);
-        uint8_t m6[SPW] = { 0 };
-        for (int tx = 0; tx < sw; tx++) {
-            int col = (s->e & 0x0800) ? sw - 1 - tx : tx;
-            unsigned t = ((s->e & 0x7FF) + (unsigned)(col * sh + (row >> 3))) & 0x7FF;
-            uint8_t p[6], m;
-            cell_row(t | (s->e & 0x6800), row & 7, p, &m);
-            for (int k = 0; k < 6; k++) pi[k * SPW + tx] = p[k];
-            m6[tx] = m;
-        }
-        for (int k = 0; k < 6; k++) memcpy(pm + k * SPW, m6, SPW);
-    }
+    /* a row is nine longs of each: the six plane rows of six bytes (the four tile columns' bytes, then
+     * the spare word), the planes made in registers and written straight to Chip RAM in longs */
+    const unsigned e = s->e, t0 = e & 0x7FF;
+    const int sw = s->w / 8, sh = s->h / 8, hf = (e & 0x0800) != 0, vf = (e & 0x1000) != 0;
+    const uint32_t k4 = (e & 0x2000) ? ~0u : 0, k5 = (e & 0x4000) ? ~0u : 0;
     uint32_t *di = (uint32_t *)(void *)(spr_img + slot * SPR_BYTES), *dm = (uint32_t *)(void *)(spr_mask + slot * SPR_BYTES);
-    for (int i = 0, n = s->h * 6 * SPW / 4; i < n; i++) { di[i] = ti[i]; dm[i] = tm[i]; }
+    for (int ty = 0; ty < s->h; ty++, di += 9, dm += 9) {
+        int row = vf ? s->h - 1 - ty : ty;
+        uint32_t p0 = 0, p1 = 0, p2 = 0, p3 = 0;
+        for (int tx = 0; tx < sw; tx++) {
+            int col = hf ? sw - 1 - tx : tx, sft = 24 - 8 * tx;
+            uint32_t v = disp.tile[(t0 + (unsigned)(col * sh + (row >> 3))) & 0x7FF][row & 7];
+            if (hf) v = (uint32_t)rev[v >> 24] << 24 | (uint32_t)rev[(v >> 16) & 0xFF] << 16 | (uint32_t)rev[(v >> 8) & 0xFF] << 8 | rev[v & 0xFF];
+            p0 |= (v >> 24) << sft;
+            p1 |= ((v >> 16) & 0xFF) << sft;
+            p2 |= ((v >> 8) & 0xFF) << sft;
+            p3 |= (v & 0xFF) << sft;
+        }
+        uint32_t m = p0 | p1 | p2 | p3, p4 = m & k4, p5 = m & k5;
+        di[0] = BE(p0); di[1] = BE(p1 >> 16); di[2] = BE(p1 << 16); di[3] = BE(p2); di[4] = BE(p3 >> 16); di[5] = BE(p3 << 16);
+        di[6] = BE(p4); di[7] = BE(p5 >> 16); di[8] = BE(p5 << 16);
+        uint32_t m0 = BE(m), m1 = BE(m >> 16), m2 = BE(m << 16);
+        dm[0] = m0; dm[1] = m1; dm[2] = m2; dm[3] = m0; dm[4] = m1; dm[5] = m2; dm[6] = m0; dm[7] = m1; dm[8] = m2;
+    }
     spr_key[slot].key = spr_keyof(s);
     spr_key[slot].used = pass_no;
     spr_key[slot].valid = 1;
+}
+
+/* a sprite's cached image: its slot, or -1 and in *victim the slot to build it in, from eight places
+ * after its key's hash: the free one or the one used longest ago, not one a sprite takes this pass
+ * (-1: all eight are). The slot this sprite's link had last is looked at first (most sprites show what
+ * they showed the pass before) */
+static int16_t link_slot[80];
+static int spr_find(uint32_t key, int link, int *victim)
+{
+    int ls = link_slot[link];
+    if (spr_key[ls].valid && spr_key[ls].key == key) return ls;
+    int h = (int)((key * 2654435761u) >> 25) & (NSPR - 1), v = -1;
+    for (int p = 0; p < 8; p++) {
+        int i = (h + p) & (NSPR - 1);
+        if (spr_key[i].valid && spr_key[i].key == key) { link_slot[link] = (int16_t)i; return i; }
+        if (spr_key[i].valid && spr_key[i].used == pass_no) continue;
+        if (v < 0 || (spr_key[v].valid && (!spr_key[i].valid || spr_key[i].used < spr_key[v].used))) v = i;
+    }
+    *victim = v;
+    return -1;
+}
+
+/* the images this pass needs and has not, built while the blitter is idle (before the restores are
+ * queued: Chip RAM written then is not waiting behind the blitter) */
+static void spr_prebuild(void)
+{
+    for (int i = 0; i < nsp; i++) {
+        uint32_t key = spr_keyof(&sp[i]);
+        int victim, slot = spr_find(key, sp[i].link, &victim);
+        if (slot >= 0) { spr_key[slot].used = pass_no; continue; }
+        if (victim < 0) continue;                         /* (op_sprite's business) */
+        spr_build(&sp[i], victim);
+        link_slot[sp[i].link] = (int16_t)victim;
+    }
 }
 
 /* eight pixels (six plane bytes and a mask, the left pixel in bit 7) into the buffer at pixel x of line y */
@@ -590,20 +633,22 @@ static void op_sprite_cpu(uint8_t *buf, int b, const struct spr *s)
 /* one sprite, cookie-cut into the buffer; the lines off the screen are left out */
 static void op_sprite(uint8_t *buf, int b, const struct spr *s, int tiles)
 {
-    /* its slot: eight places from its key's hash; else the free one or the one used longest ago, once
-     * the blits queued this pass are done if that one was used this pass */
+    /* its slot (built already by spr_prebuild, mostly), else one built now: see spr_find */
     uint32_t key = spr_keyof(s);
-    int h = (int)((key * 2654435761u) >> 25) & (NSPR - 1), slot = -1, victim = -1;
-    for (int p = 0; p < 8 && slot < 0; p++) {
-        int i = (h + p) & (NSPR - 1);
-        if (spr_key[i].valid && spr_key[i].key == key) { slot = i; spr_key[i].used = pass_no; break; }
-        if (victim < 0 || (spr_key[victim].valid && (!spr_key[i].valid || spr_key[i].used < spr_key[victim].used))) victim = i;
-    }
-    if (slot < 0) {
+    int victim, slot = spr_find(key, s->link, &victim);
+    if (slot >= 0) spr_key[slot].used = pass_no;
+    else {
+        if (victim < 0) {                                 /* (every place taken this pass: one already drawn, after its blits) */
+            int h = (int)((key * 2654435761u) >> 25) & (NSPR - 1);
+            for (int p = 0; p < 8 && victim < 0; p++) if (spr_drawn[(h + p) & (NSPR - 1)] == pass_no) victim = (h + p) & (NSPR - 1);
+            blit_wait();
+            if (victim < 0) { op_sprite_cpu(buf, b, s); return; }   /* (none: drawn by the CPU, not cached) */
+        }
         slot = victim;
-        if (spr_key[slot].valid && spr_key[slot].used == pass_no) blit_wait();
         spr_build(s, slot);
+        link_slot[s->link] = (int16_t)slot;
     }
+    spr_drawn[slot] = pass_no;
     int y0 = s->y < 0 ? 0 : s->y, y1 = s->y + s->h > SH ? SH : s->y + s->h;
     if (y1 <= y0) return;
     int x = obj.px0 + s->x;
@@ -720,6 +765,22 @@ void obj_update(void)
         if (obj_clock) { uint32_t t3 = obj_clock(); obj.ph_rink += t2 - t1; obj.ph_a += t3 - t2; }
     }
     PHASE(0);
+    memset(cpu_line, 0, sizeof cpu_line);
+    sprite_list();
+    if (d->any_tile_dirty)                                /* the cached sprite images that show a changed tile, drawn this pass or not */
+        for (int i = 0; i < DISP_TILES / 8; i++) {
+            unsigned m = d->tile_dirty[i];
+            while (m) {
+                int t = i * 8 + __builtin_ctz(m);
+                m &= m - 1;
+                for (int w = 0; w < NSPR / 32; w++) {
+                    uint32_t bits = tslot[t][w];
+                    while (bits) { int sl = w * 32 + __builtin_ctz(bits); bits &= bits - 1; spr_key[sl].valid = 0; }
+                }
+            }
+        }
+    spr_prebuild();                                       /* (the blitter is idle still: nothing of this pass queued) */
+    PHASE(2);
     int b = obj.shown ^ 1;
     uint8_t *buf = obj.buf[b];
     obj.px0 = (512 - disp_hscroll(0, 1)) & 511;
@@ -755,21 +816,7 @@ void obj_update(void)
     napend[b] = 0;
     if (!stay) { nadone[b] = 0; abox[b].on = 0; }
     ndone[b] = nchg[b] = full[b] = 0;
-    memset(cpu_line, 0, sizeof cpu_line);
     PHASE(1);
-    sprite_list();
-    if (d->any_tile_dirty)                                /* the cached sprite images that show a changed tile, drawn this pass or not */
-        for (int i = 0; i < DISP_TILES / 8; i++) {
-            unsigned m = d->tile_dirty[i];
-            while (m) {
-                int t = i * 8 + __builtin_ctz(m);
-                m &= m - 1;
-                for (int w = 0; w < NSPR / 32; w++) {
-                    uint32_t bits = tslot[t][w];
-                    while (bits) { int sl = w * 32 + __builtin_ctz(bits); bits &= bits - 1; spr_key[sl].valid = 0; }
-                }
-            }
-        }
     if (stay)
         for (int i = 0; i < nsp; i++)
             mark_lines(rows, sp[i].y, sp[i].y + sp[i].h, sp[i].x, sp[i].x + sp[i].w);
